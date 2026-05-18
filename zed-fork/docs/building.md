@@ -1,29 +1,28 @@
 # Building
 
+The upstream Zed source lives at `zed-fork/zed/` (a squashed git
+subtree). Building means running Zed's own build through that path.
+
 ## Local (macOS)
 
 Prerequisites:
 
 * macOS 11 or newer (the bundle's `LSMinimumSystemVersion`).
 * Xcode Command Line Tools (`xcode-select --install`).
-* Rust stable (matches Zed's `rust-toolchain.toml` after fetch).
+* Rust stable (matches Zed's `rust-toolchain.toml` in the subtree).
 * Python 3.11+ on PATH.
 * `cmake`, `ninja`, `pkg-config`, `rsync` (via Homebrew).
 
 ```sh
 cd zed-fork
-make fetch        # shallow clones upstream Zed at the pinned commit
-make patch        # applies patches/*.patch and copies extension into Zed tree
 make toolchain    # provisions GNAT, ALS, gnatprove, gdb, RecordFlux into build/
 make app          # builds Zed (~30–60 min cold) and assembles Zed GNAT.app
 ```
 
-`make all` runs the whole pipeline.
-
-After the build the bundle lives at:
+`make all` runs both. After the build the bundle lives at:
 
 ```
-zed-fork/vendor/zed/target/<triple>/release/bundle/osx/Zed GNAT.app
+zed-fork/zed/target/<triple>/release/bundle/osx/Zed GNAT.app
 ```
 
 Launch it with `open` or drag it to `/Applications/`.
@@ -33,6 +32,9 @@ Launch it with `open` or drag it to `/Applications/`.
 `.github/workflows/zed-gnat-mac.yml` runs the same pipeline for
 `aarch64-apple-darwin` (macos-14) and `x86_64-apple-darwin` (macos-13).
 Each job uploads a `.app.tar.gz` (and `.dmg` if signing was configured).
+
+The workflow uses `fetch-depth: 0` because subtree commits aren't
+reachable from a shallow clone.
 
 ### Required GitHub Secrets (optional, for signed builds)
 
@@ -46,20 +48,30 @@ Each job uploads a `.app.tar.gz` (and `.dmg` if signing was configured).
 If these are absent, the build still completes; the resulting `.app`
 is unsigned (users must right-click → Open the first time).
 
-## Bumping the Zed pin
+## Editing inside the subtree
 
-1. Edit `zed-fork/zed.pin` with the new commit.
-2. `make fetch && make patch` and resolve any patch rejects under
-   `zed-fork/vendor/zed/`.
-3. If you had to edit upstream files, regenerate the affected patch:
+`zed-fork/zed/` is just files in this repo. Use any editor; commit
+normally:
 
-   ```sh
-   cd zed-fork/vendor/zed
-   git diff -- <path> > ../../patches/<NN-name>.patch
-   ```
+```sh
+$EDITOR zed-fork/zed/crates/zed/Cargo.toml
+git add zed-fork/zed/crates/zed/Cargo.toml
+git commit -m "Bump bundle min macOS to 12.0"
+```
 
-4. `make app` to make sure the bundle still builds.
-5. Commit the updated `zed.pin` + patches.
+The Zed source itself has a `CLAUDE.md` at `zed-fork/zed/CLAUDE.md`
+that documents Zed's own Rust conventions; follow them when modifying
+core crates.
+
+## Pulling upstream
+
+```sh
+make pull-upstream                       # tracks zed-industries/zed main
+make pull-upstream REF=v0.207.4          # a tag
+```
+
+See [`upstream-sync.md`](upstream-sync.md) for the conflict workflow
+and the list of files most likely to clash.
 
 ## Bumping the toolchain
 

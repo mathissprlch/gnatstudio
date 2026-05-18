@@ -56,4 +56,46 @@
     // Represents the tags for inline runnable indicators, or spawning multiple tasks at once.
     // "tags": []
   },
+  // ---- GNAT defaults shipped with Zed GNAT --------------------------------
+  // Override per-project by adding the same labels to `.zed/tasks.json`.
+  {
+    "label": "gprbuild",
+    "command": "gprbuild",
+    "args": ["-P", "$ZED_GPR_FILE", "-j0", "-cargs", "-gnata", "-g"],
+    "reveal": "always",
+    "hide": "on_success",
+    "tags": ["ada-build"]
+  },
+  {
+    "label": "gprclean",
+    "command": "gprclean",
+    "args": ["-P", "$ZED_GPR_FILE"],
+    "reveal": "always",
+    "hide": "on_success"
+  },
+  {
+    "label": "gnatprove (whole project)",
+    "command": "gnatprove",
+    "args": ["-P", "$ZED_GPR_FILE", "--level=2", "--report=all"],
+    "reveal": "always"
+  },
+  {
+    "label": "gnatprove (current file)",
+    "command": "gnatprove",
+    "args": ["-P", "$ZED_GPR_FILE", "-u", "$ZED_FILENAME", "--level=2", "--report=all"],
+    "reveal": "always"
+  },
+  {
+    "label": "rflx generate",
+    "command": "rflx",
+    "args": ["generate", "--target", "ada", "--output-directory", "generated", "$ZED_FILE"],
+    "reveal": "always",
+    "hide": "on_success"
+  },
+  {
+    "label": "rflx check (current file)",
+    "command": "rflx",
+    "args": ["check", "$ZED_FILE"],
+    "reveal": "always"
+  }
 ]

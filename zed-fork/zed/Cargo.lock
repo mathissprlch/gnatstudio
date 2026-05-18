@@ -22738,6 +22738,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "zed_ada"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "zed_extension_api 0.7.0",
+]
+
+[[package]]
 name = "zed_credentials_provider"
 version = "0.1.0"
 dependencies = [

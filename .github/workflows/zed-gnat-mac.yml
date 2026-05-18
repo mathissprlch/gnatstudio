@@ -19,14 +19,9 @@ on:
         type: choice
         default: 'stable'
         options: [stable, preview, nightly, dev]
-      target_triple:
-        description: 'Target triple'
-        type: choice
-        default: 'aarch64-apple-darwin'
-        options: [aarch64-apple-darwin, x86_64-apple-darwin]
 
 concurrency:
-  group: zed-gnat-mac-${{ github.ref }}-${{ github.event.inputs.target_triple || 'host' }}
+  group: zed-gnat-mac-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -45,19 +40,22 @@ jobs:
       TARGET_TRIPLE: ${{ matrix.target }}
       RELEASE_CHANNEL: ${{ github.event.inputs.release_channel || 'stable' }}
       TOOLCHAIN_DIR: ${{ github.workspace }}/zed-fork/build/toolchain
-      # Zed itself needs >= 1.85; pinned via rust-toolchain.toml inside Zed.
       CARGO_TERM_COLOR: always
       RUST_BACKTRACE: short
 
     steps:
       - name: Checkout fork
         uses: actions/checkout@v4
+        with:
+          # Subtree commits aren't reachable from a shallow clone; need the
+          # full history so the build step (and any future subtree push) has
+          # everything it needs.
+          fetch-depth: 0
 
       - name: Install build tooling
         run: |
           brew update
           brew install cmake ninja foundationdb pkg-config python@3.12 rsync || true
-          # cargo-bundle (zed's fork) is installed on demand by bundle-mac.
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -70,8 +68,8 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            zed-fork/vendor/zed/target
-          key: zed-cargo-${{ matrix.target }}-${{ hashFiles('zed-fork/zed.pin', 'zed-fork/patches/**') }}
+            zed-fork/zed/target
+          key: zed-cargo-${{ matrix.target }}-${{ hashFiles('zed-fork/zed/Cargo.lock') }}
           restore-keys: zed-cargo-${{ matrix.target }}-
 
       - name: Cache toolchain
@@ -80,14 +78,6 @@ jobs:
         with:
           path: zed-fork/build/toolchain
           key: gnat-toolchain-${{ matrix.target }}-${{ hashFiles('zed-fork/scripts/provision-toolchain.sh') }}
-
-      - name: Fetch Zed source
-        working-directory: zed-fork
-        run: make fetch
-
-      - name: Apply patches + bundle extension
-        working-directory: zed-fork
-        run: make patch
 
       - name: Stage GNAT toolchain
         if: steps.toolchain-cache.outputs.cache-hit != 'true'
@@ -107,7 +97,7 @@ jobs:
         working-directory: zed-fork
         run: |
           shopt -s nullglob
-          BUNDLE_DIR="vendor/zed/target/${TARGET_TRIPLE}/release/bundle/osx"
+          BUNDLE_DIR="zed/target/${TARGET_TRIPLE}/release/bundle/osx"
           cd "$BUNDLE_DIR"
           for app in *.app; do
             tar -czf "${app}.tar.gz" "$app"
@@ -119,7 +109,7 @@ jobs:
         with:
           name: zed-gnat-${{ matrix.target }}
           path: |
-            zed-fork/vendor/zed/target/${{ matrix.target }}/release/bundle/osx/*.tar.gz
-            zed-fork/vendor/zed/target/${{ matrix.target }}/release/bundle/osx/*.dmg
+            zed-fork/zed/target/${{ matrix.target }}/release/bundle/osx/*.tar.gz
+            zed-fork/zed/target/${{ matrix.target }}/release/bundle/osx/*.dmg
           if-no-files-found: error
           retention-days: 14

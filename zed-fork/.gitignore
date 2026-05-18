@@ -1,13 +1,10 @@
-# Vendored upstream Zed source; fetched at build time.
-vendor/
-
 # Staged GNAT toolchain (output of provision-toolchain.sh).
 build/
 
-# Cargo / Rust artifacts.
+# Cargo / Rust artifacts inside the subtree and elsewhere.
+zed/target/
 target/
 **/*.rs.bk
-Cargo.lock
 
 # Python venvs from local rflx tests.
 .venv/
