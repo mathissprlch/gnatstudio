@@ -1,0 +1,13 @@
+name = "RecordFlux"
+# No tree-sitter grammar yet; Zed will fall back to plain rendering and the
+# `recordflux` LSP supplies semantic info via diagnostics + hover + completion.
+path_suffixes = ["rflx"]
+line_comments = ["-- "]
+brackets = [
+    { start = "(", end = ")", close = true, newline = false },
+    { start = "[", end = "]", close = true, newline = false },
+    { start = "{", end = "}", close = true, newline = false },
+    { start = "\"", end = "\"", close = true, newline = false, not_in = ["string", "comment"] },
+]
+tab_size = 3
+hard_tabs = false

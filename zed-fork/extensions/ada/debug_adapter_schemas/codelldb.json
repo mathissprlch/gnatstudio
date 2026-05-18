@@ -1,0 +1,20 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "codelldb (Ada via LLDB)",
+  "description": "Fallback for macOS aarch64 where gdb is not available. Uses LLDB; Ada-specific features (e.g. exception catchpoints by name) are limited.",
+  "type": "object",
+  "required": ["request"],
+  "properties": {
+    "request": { "type": "string", "enum": ["launch", "attach"], "default": "launch" },
+    "program": { "type": "string" },
+    "args": { "type": "array", "items": { "type": "string" }, "default": [] },
+    "cwd": { "type": "string", "default": "${ZED_WORKTREE_ROOT}" },
+    "env": { "type": "object", "additionalProperties": { "type": "string" } },
+    "stopOnEntry": { "type": "boolean", "default": false },
+    "sourceLanguages": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": ["ada", "c", "cpp"]
+    }
+  }
+}

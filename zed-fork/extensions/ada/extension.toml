@@ -1,0 +1,51 @@
+id = "ada"
+name = "Ada / SPARK"
+description = "Ada and SPARK language support, GNAT debugger, GNATprove with coverage-style overlay, and RecordFlux."
+version = "0.1.0"
+schema_version = 1
+authors = [
+    "AdaCore (upstream tooling: ALS, GNATprove, RecordFlux)",
+    "Zed-GNAT fork maintainers",
+]
+repository = "https://github.com/mathissprlch/gnatstudio"
+
+# --- Language servers --------------------------------------------------------
+
+[language_servers.ada_language_server]
+name = "Ada Language Server"
+languages = ["Ada", "GPR"]
+# Discovered binary: $PATH lookup for `ada_language_server`, then bundled copy.
+
+[language_servers.gnatprove_proof]
+name = "GNATprove Proof Server"
+languages = ["Ada"]
+# Custom thin LSP that wraps `gnatprove` and emits VC results as diagnostics.
+
+[language_servers.recordflux]
+name = "RecordFlux Language Server"
+languages = ["RecordFlux"]
+# Custom thin LSP that wraps `rflx check` / `rflx generate` and serves diagnostics.
+
+# --- Tree-sitter grammars ----------------------------------------------------
+
+[grammars.ada]
+repository = "https://github.com/briot/tree-sitter-ada"
+commit = "6b58259a08b1a22ba0247a7ce30be384db618da6"
+
+[grammars.gpr]
+repository = "https://github.com/brownts/tree-sitter-gpr"
+commit = "cea857d3c18d1385d1f5b66cd09ea1e44173945c"
+
+# No upstream tree-sitter grammar for RecordFlux yet; .rflx files use the
+# regex-based config in `languages/rflx/` for basic highlighting until we
+# write or upstream a real grammar.
+
+# --- Debug adapters ----------------------------------------------------------
+
+[debug_adapters.GNAT]
+schema_path = "debug_adapter_schemas/gnat.json"
+# Drives `gdb -i mi` via the cpptools-style adapter that ships with the bundle.
+
+[debug_adapters.codelldb]
+schema_path = "debug_adapter_schemas/codelldb.json"
+# Fallback for Mac aarch64 where gdb is unavailable.
