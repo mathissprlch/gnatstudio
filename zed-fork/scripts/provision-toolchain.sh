@@ -3,129 +3,135 @@
 # $TOOLCHAIN_DIR/{bin,lib,share,python} so bundle-mac.sh can drop it
 # into the .app's Resources/tools/.
 #
-# Strategy: lean on Alire (alr) to fetch reproducible binaries for:
-#   - gnat_native       (the FSF GNAT toolchain: gnat, gprbuild, gprclean, gdb)
-#   - ada_language_server
-#   - spark2014         (gnatprove + provers)
-#   - recordflux        (rflx)
-#
-# Alire is the supported reproducible way to provision these tools; if it
-# is not on PATH the script attempts to install it.
+# Strategy: lean on Alire (`alr install --prefix=...`) for the Ada side
+# of the world. RecordFlux is a Python package, so it goes into a
+# vendored venv. Anything Alire can't provide (e.g. `gnatprove` on
+# platforms where the FSF SPARK crate is unavailable) is left out --
+# the launcher just won't find it and the user can install it manually.
 #
 # Outputs:
-#   $TOOLCHAIN_DIR/bin     symlinks/binaries: gnat, gprbuild, ada_language_server,
-#                          gnatprove, rflx, gdb, codelldb, python3
-#   $TOOLCHAIN_DIR/lib     shared libs needed by the above
-#   $TOOLCHAIN_DIR/share   runtime files (ALS schemas, gnatprove configs, etc.)
-#   $TOOLCHAIN_DIR/python  vendored RecordFlux + deps (so the bundled python
-#                          can `import rflx`)
+#   $TOOLCHAIN_DIR/bin     gnat, gprbuild, ada_language_server, gnatprove,
+#                          rflx, gdb (if available), python3
+#   $TOOLCHAIN_DIR/lib     shared libs + GNAT runtime
+#   $TOOLCHAIN_DIR/share   runtime files
+#   $TOOLCHAIN_DIR/python  vendored RecordFlux venv
 #
 # The script is idempotent and prints what it skipped.
 set -euo pipefail
 
 TOOLCHAIN_DIR="${TOOLCHAIN_DIR:-${PWD}/build/toolchain}"
-ALIRE_DIR="${ALIRE_DIR:-${TOOLCHAIN_DIR}/.alire}"
-mkdir -p "${TOOLCHAIN_DIR}"/{bin,lib,share,python}
+ALIRE_VERSION="${ALIRE_VERSION:-2.0.2}"
 
-need() {
-    if ! command -v "$1" >/dev/null 2>&1; then
-        echo "missing required tool: $1" >&2
-        return 1
-    fi
-}
+mkdir -p "${TOOLCHAIN_DIR}/bin"
 
-install_alire() {
+log()  { printf '== %s\n' "$*"; }
+warn() { printf '!! %s\n' "$*" >&2; }
+
+# ---------------------------------------------------------------------------
+
+install_alire_if_needed() {
     if command -v alr >/dev/null 2>&1; then
+        log "alr already on PATH: $(command -v alr) ($(alr --version 2>/dev/null | head -1))"
         return 0
     fi
-    case "$(uname -s)" in
-        Darwin)
-            local ver="2.0.2"
-            local arch="$(uname -m)"
-            local pkg
-            case "${arch}" in
-                arm64)   pkg="alr-${ver}-bin-aarch64-macos.zip" ;;
-                x86_64)  pkg="alr-${ver}-bin-x86_64-macos.zip"  ;;
-                *) echo "unsupported macOS arch: ${arch}" >&2; return 2 ;;
-            esac
-            local tmp; tmp="$(mktemp -d)"
-            curl -fL -o "${tmp}/alr.zip" \
-                "https://github.com/alire-project/alire/releases/download/v${ver}/${pkg}"
-            (cd "${tmp}" && unzip -q alr.zip)
-            install -m 0755 "${tmp}/bin/alr" "${TOOLCHAIN_DIR}/bin/alr"
-            export PATH="${TOOLCHAIN_DIR}/bin:${PATH}"
+
+    local os arch asset
+    os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+    arch="$(uname -m)"
+    case "${os}-${arch}" in
+        darwin-arm64)  asset="alr-${ALIRE_VERSION}-bin-aarch64-macos.zip" ;;
+        darwin-x86_64) asset="alr-${ALIRE_VERSION}-bin-x86_64-macos.zip"  ;;
+        linux-x86_64)  asset="alr-${ALIRE_VERSION}-bin-x86_64-linux.zip"  ;;
+        *)
+            warn "no prebuilt Alire binary for ${os}-${arch}"
+            return 2
             ;;
-        Linux)
-            local ver="2.0.2"
-            local pkg="alr-${ver}-bin-x86_64-linux.zip"
-            local tmp; tmp="$(mktemp -d)"
-            curl -fL -o "${tmp}/alr.zip" \
-                "https://github.com/alire-project/alire/releases/download/v${ver}/${pkg}"
-            (cd "${tmp}" && unzip -q alr.zip)
-            install -m 0755 "${tmp}/bin/alr" "${TOOLCHAIN_DIR}/bin/alr"
-            export PATH="${TOOLCHAIN_DIR}/bin:${PATH}"
-            ;;
-        *) echo "unsupported OS for alire bootstrap: $(uname -s)" >&2; return 2 ;;
     esac
+
+    local url="https://github.com/alire-project/alire/releases/download/v${ALIRE_VERSION}/${asset}"
+    local tmp
+    tmp="$(mktemp -d)"
+    log "downloading ${url}"
+    curl --fail --silent --show-error --location --output "${tmp}/alr.zip" "${url}"
+    (cd "${tmp}" && unzip -q alr.zip)
+    install -m 0755 "${tmp}/bin/alr" "${TOOLCHAIN_DIR}/bin/alr"
+    rm -rf "${tmp}"
+
+    export PATH="${TOOLCHAIN_DIR}/bin:${PATH}"
+    log "installed alr at ${TOOLCHAIN_DIR}/bin/alr"
 }
 
-stage_crate() {
+# `alr install --prefix=DIR <crate>` is the supported way (Alire 2.x) to drop
+# a binary crate into a freestanding tree of bin/, lib/, share/.
+alr_install() {
     local crate="$1"
-    local crate_dir="${ALIRE_DIR}/${crate}"
-    if [[ ! -d "${crate_dir}" ]]; then
-        mkdir -p "${ALIRE_DIR}"
-        (cd "${ALIRE_DIR}" && alr -n init --bin --no-skel "${crate}" >/dev/null)
-        (cd "${crate_dir}" && alr -n with "${crate}" >/dev/null)
+    log "alr install --prefix=${TOOLCHAIN_DIR} ${crate}"
+    if alr -n install --prefix="${TOOLCHAIN_DIR}" "${crate}"; then
+        return 0
     fi
-    (cd "${crate_dir}" && alr -n update >/dev/null)
-    # Drop the resolved binaries into our staging area.
-    (cd "${crate_dir}" && alr -n exec -- bash -c "
-        for b in \$(alr -n printenv 2>/dev/null | awk -F= '/^export PATH=/{gsub(/\"/,\"\",\$2); print \$2}' | tr ':' '\n' | sort -u); do
-            [[ -d \"\$b\" ]] || continue
-            find \"\$b\" -maxdepth 1 -type f -perm -u+x -print0 | while IFS= read -r -d '' f; do
-                cp -nu \"\$f\" '${TOOLCHAIN_DIR}/bin/' || true
-            done
-        done
-    ")
-    # Mirror lib/ and share/ from each pulled crate.
-    find "${crate_dir}/alire/cache" -maxdepth 4 -type d \( -name lib -o -name share \) -print0 2>/dev/null \
-        | while IFS= read -r -d '' d; do
-            base="$(basename "$d")"
-            rsync -a "$d"/ "${TOOLCHAIN_DIR}/${base}/"
-        done
+    warn "alr install ${crate} failed; the bundle will be missing this tool"
+    return 0   # don't break the build for one missing crate
 }
+
+# Select the FSF GNAT + gprbuild toolchain that Alire will resolve against.
+select_default_toolchain() {
+    log "selecting default Alire toolchain (gnat_native + gprbuild)"
+    alr -n toolchain --select gnat_native gprbuild
+}
+
+# ---------------------------------------------------------------------------
 
 install_recordflux() {
-    # RecordFlux is Python; vendor a self-contained venv into python/.
     local py
     py="$(command -v python3.12 || command -v python3.11 || command -v python3 || true)"
     if [[ -z "${py}" ]]; then
-        echo "no python3 found; skipping RecordFlux" >&2
+        warn "no python3 found; skipping RecordFlux"
         return 0
     fi
-    "${py}" -m venv "${TOOLCHAIN_DIR}/python"
-    "${TOOLCHAIN_DIR}/python/bin/pip" install --upgrade pip wheel >/dev/null
-    "${TOOLCHAIN_DIR}/python/bin/pip" install "RecordFlux>=0.25" >/dev/null
-    # Symlink rflx into bin/.
-    ln -sf "${TOOLCHAIN_DIR}/python/bin/rflx" "${TOOLCHAIN_DIR}/bin/rflx"
-    ln -sf "${TOOLCHAIN_DIR}/python/bin/python3" "${TOOLCHAIN_DIR}/bin/python3"
+
+    if [[ ! -x "${TOOLCHAIN_DIR}/python/bin/pip" ]]; then
+        log "creating Python venv at ${TOOLCHAIN_DIR}/python"
+        "${py}" -m venv "${TOOLCHAIN_DIR}/python"
+    fi
+
+    "${TOOLCHAIN_DIR}/python/bin/pip" install --quiet --upgrade pip wheel
+    if ! "${TOOLCHAIN_DIR}/python/bin/pip" install --quiet "RecordFlux>=0.25"; then
+        warn "pip install RecordFlux failed; the bundle will be missing rflx"
+        return 0
+    fi
+
+    if [[ -f "${TOOLCHAIN_DIR}/python/bin/rflx" ]]; then
+        ln -sf "${TOOLCHAIN_DIR}/python/bin/rflx" "${TOOLCHAIN_DIR}/bin/rflx"
+    fi
+    if [[ -f "${TOOLCHAIN_DIR}/python/bin/python3" ]]; then
+        ln -sf "${TOOLCHAIN_DIR}/python/bin/python3" "${TOOLCHAIN_DIR}/bin/python3"
+    fi
 }
 
 main() {
-    need curl
-    need unzip
-    install_alire
+    if ! command -v curl  >/dev/null 2>&1; then warn "curl is required"; exit 1; fi
+    if ! command -v unzip >/dev/null 2>&1; then warn "unzip is required"; exit 1; fi
 
-    stage_crate gnat_native
-    stage_crate gprbuild
-    stage_crate ada_language_server
-    stage_crate spark2014
+    install_alire_if_needed
+    select_default_toolchain
+
+    # FSF GNAT compiler (gnat, gnatmake, gnatbind, gnatlink, ...) and the
+    # GNAT runtime libs. `gnat_native` is the toolchain crate; `alr install`
+    # writes its bin/lib/share into ${TOOLCHAIN_DIR}.
+    alr_install gnat_native
+    alr_install gprbuild
+    alr_install ada_language_server
+    # spark2014 is published as a crate on Alire's community index; if it's
+    # missing on this platform alr_install just logs a warning.
+    alr_install spark2014
+
     install_recordflux
 
-    echo
-    echo "Staged toolchain at ${TOOLCHAIN_DIR}"
-    echo "Binaries:"
-    ls "${TOOLCHAIN_DIR}/bin" | sed 's/^/  /'
+    log "Staged toolchain at ${TOOLCHAIN_DIR}"
+    if [[ -d "${TOOLCHAIN_DIR}/bin" ]]; then
+        log "Binaries:"
+        ls "${TOOLCHAIN_DIR}/bin" | sed 's/^/  /'
+    fi
     du -sh "${TOOLCHAIN_DIR}"
 }
 
