@@ -20,9 +20,15 @@ on:
         default: 'stable'
         options: [stable, preview, nightly, dev]
 
+# Cancel superseded runs only on PRs; on push to a tracked branch let each
+# attempt finish so the failure log step actually fires.
 concurrency:
-  group: zed-gnat-mac-${{ github.ref }}
-  cancel-in-progress: true
+  group: zed-gnat-mac-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+  pull-requests: write   # for the failure log → PR comment step
 
 jobs:
   build:
@@ -42,23 +48,17 @@ jobs:
       TOOLCHAIN_DIR: ${{ github.workspace }}/zed-fork/build/toolchain
       CARGO_TERM_COLOR: always
       RUST_BACKTRACE: short
+      BUILD_LOG: ${{ github.workspace }}/zed-fork/build/build.log
 
     steps:
       - name: Checkout fork
         uses: actions/checkout@v4
         with:
-          # Subtree commits aren't reachable from a shallow clone; need the
-          # full history so the build step (and any future subtree push) has
-          # everything it needs.
-          fetch-depth: 0
+          fetch-depth: 0   # subtree commits aren't reachable from a shallow clone
 
       - name: Install build tooling
         run: |
           brew update
-          # foundationdb is only needed by Zed's collab server, not the
-          # editor we're packaging; skip it. cmake/ninja/pkg-config/rsync
-          # are required by Zed's build; python@3.12 is for our LSP shims
-          # and for RecordFlux's venv.
           brew install cmake ninja pkg-config python@3.12 rsync
 
       - name: Set up Rust
@@ -86,18 +86,73 @@ jobs:
       - name: Stage GNAT toolchain
         if: steps.toolchain-cache.outputs.cache-hit != 'true'
         working-directory: zed-fork
-        run: make toolchain
+        run: |
+          mkdir -p build
+          make toolchain 2>&1 | tee -a "$BUILD_LOG"
 
       - name: Build Zed GNAT.app
+        id: build_app
         working-directory: zed-fork
         env:
           SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_ID:         ${{ secrets.APPLE_ID }}
           APPLE_PASS:       ${{ secrets.APPLE_APP_PASSWORD }}
           APPLE_TEAM_ID:    ${{ secrets.APPLE_TEAM_ID }}
-        run: make app
+        run: |
+          mkdir -p build
+          set -o pipefail
+          make app 2>&1 | tee -a "$BUILD_LOG"
+
+      - name: Surface build failure
+        if: failure() && steps.build_app.conclusion == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set +e
+          mkdir -p zed-fork/build
+          : > zed-fork/build/failure.md
+          {
+            echo "### CI failure — \`${{ matrix.target }}\` (${{ github.event_name }})"
+            echo
+            echo "Step: \`Build Zed GNAT.app\`"
+            echo "Run:  ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo "Commit: \`${{ github.sha }}\`"
+            echo
+            echo "Last 200 lines of build log:"
+            echo
+            echo '```'
+            tail -n 200 "$BUILD_LOG" 2>/dev/null || echo "(no build log captured)"
+            echo '```'
+          } > zed-fork/build/failure.md
+          cat zed-fork/build/failure.md
+
+          # Only post on pull_request events (we need a PR number)
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          if [[ -z "$PR_NUMBER" ]]; then
+            # Push-event runs: look up an open PR for this head ref.
+            PR_NUMBER=$(gh pr list --repo "${{ github.repository }}" \
+                          --head "${{ github.ref_name }}" \
+                          --state open --json number --jq '.[0].number // empty')
+          fi
+          if [[ -n "$PR_NUMBER" ]]; then
+            gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}" \
+                --body-file zed-fork/build/failure.md
+            echo "Posted failure log to PR #$PR_NUMBER"
+          else
+            echo "No open PR for ${{ github.ref_name }}; skipping comment"
+          fi
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-${{ matrix.target }}
+          path: zed-fork/build/build.log
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Archive .app for upload
+        if: steps.build_app.conclusion == 'success'
         working-directory: zed-fork
         run: |
           shopt -s nullglob
@@ -109,6 +164,7 @@ jobs:
           ls -la
 
       - name: Upload artifact
+        if: steps.build_app.conclusion == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: zed-gnat-${{ matrix.target }}
