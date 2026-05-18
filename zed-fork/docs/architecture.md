@@ -1,8 +1,17 @@
 # Architecture
 
-The fork is a thin layer on top of upstream Zed. Most of the value comes
-from the **bundled extension**; the Zed core patches mostly do branding
-and ship sane defaults.
+The fork is a Zed git subtree (`zed-fork/zed/`) plus a small set of
+direct modifications committed on top:
+
+* a bundled extension at `zed/extensions/ada/`
+* renamed Mac bundle metadata in `zed/crates/zed/Cargo.toml`
+* GNAT-flavored defaults in `zed/assets/settings/initial_*.json`
+* `extensions/ada` registered in `zed/Cargo.toml` workspace members
+
+Everything else (build pipeline, toolchain provisioning, Mac bundling,
+licensing docs) lives outside the subtree under `zed-fork/`. That
+separation is the point of the layout — when we pull upstream Zed,
+only the subtree is touched.
 
 ```
                        ┌─────────────────────────┐
@@ -11,8 +20,8 @@ and ship sane defaults.
    user opens .adb ──▶ │  Contents/MacOS/zed     │ (launcher: sets PATH,
                        │      ↓                  │  ZED_GNAT_RESOURCES)
                        │  Contents/MacOS/zed-real│ (the real Zed binary,
-                       │      ↓                  │  built from vendored Zed
-                       │  Contents/Resources/    │  + our 4 patches)
+                       │      ↓                  │  built from the subtree)
+                       │  Contents/Resources/    │
                        │    extensions/ada/      │ (built-in extension)
                        │    tools/bin/           │ (alr-provisioned GNAT,
                        │      ada_language_server│  gnatprove, rflx, gdb,
@@ -43,8 +52,8 @@ and ship sane defaults.
 The user-visible requirement is *"immersive showing of the results in a
 code coverage style fashion"*. Zed already paints per-line gutter
 indicators and inline diagnostics in colors driven by severity. So
-instead of patching Zed core to render a custom proof gutter, the
-`gnatprove_proof` LSP emits one diagnostic per Verification Condition:
+instead of modifying Zed's editor rendering, the `gnatprove_proof` LSP
+emits one diagnostic per Verification Condition:
 
 | VC status (gnatprove output) | LSP severity            | Gutter color (default theme) |
 | ---------------------------- | ----------------------- | ---------------------------- |
@@ -53,10 +62,9 @@ instead of patching Zed core to render a custom proof gutter, the
 | `error:` (counterexample)    | `Error` (1)             | red                          |
 | `info: skipped`/`trivial`    | `Information` (3)       | blue                         |
 
-The user can flip on `diagnostics.inline.enabled` (we already do this in
-`patches/0002`) to get the message next to the line. The result is
-visually equivalent to GNAT Studio's proof results view, but inherits
-Zed's editor performance and theming.
+`diagnostics.inline.enabled = true` (set in our `initial_user_settings.json`)
+puts the message next to the line. The visual is equivalent to GNAT
+Studio's proof view, but uses Zed's existing renderer.
 
 ## Why three LSPs?
 
@@ -72,29 +80,38 @@ Splitting concerns:
   flow through ALS so they need their own server for diagnostics and
   for the `recordflux.generate` command.
 
-## Why we don't patch Zed for the proof view
+## Why we don't change Zed's editor crates
 
-Patching Zed core has a recurring cost: every Zed bump risks merge
-conflicts in the gutter rendering, diagnostic model, or settings
-schema. By emitting diagnostics we lean on Zed's stable public LSP
-contract.
+The bigger surface area we touch in `zed/crates/`, the more upstream
+pulls hurt. The current divergence is:
 
-If we ever need a separate panel ("show all VCs across the project,
-grouped by file"), Zed's project-diagnostics view already does this for
-free since we publish diagnostics through the standard channel.
+| File                                              | Type of change             |
+| ------------------------------------------------- | -------------------------- |
+| `zed/Cargo.toml`                                  | add `extensions/ada` member |
+| `zed/crates/zed/Cargo.toml`                       | branding metadata          |
+| `zed/assets/settings/initial_user_settings.json`  | seed user settings         |
+| `zed/assets/settings/initial_tasks.json`          | append GNAT task examples  |
+| `zed/assets/settings/initial_debug_tasks.json`    | append GNAT debug examples |
+| `zed/extensions/ada/**`                           | new directory, no conflict surface |
+
+That's it. Everything else uses Zed's stable extension and LSP
+contracts. If we ever need a dedicated proof view (project-wide VC
+list, prover statistics graph), Zed's project-diagnostics view already
+does the "all VCs grouped by file" case for free, since we publish
+diagnostics through the standard channel.
 
 ## Toolchain provisioning
 
-`scripts/provision-toolchain.sh` is the boundary between "Zed source +
-patches" and "actual GNAT binaries". It uses Alire (`alr`) as a
-reproducible binary provider for `gnat_native`, `ada_language_server`,
-`gprbuild`, and `spark2014`. RecordFlux is a Python package, so it
-goes into a vendored venv. The staged tree is what bundle-mac copies
-into `Contents/Resources/tools/`.
+`scripts/provision-toolchain.sh` is the boundary between "Zed source"
+and "actual GNAT binaries". It uses Alire (`alr`) as a reproducible
+binary provider for `gnat_native`, `ada_language_server`, `gprbuild`,
+and `spark2014`. RecordFlux is a Python package, so it goes into a
+vendored venv. The staged tree is what `bundle-mac.sh` copies into
+`Contents/Resources/tools/`.
 
 The launcher in `Contents/MacOS/zed` prepends `tools/bin` to PATH and
 exports `ZED_GNAT_RESOURCES`, which the Ada extension uses to find the
 bundled binaries before falling back to whatever the user has on PATH.
 This means the bundle works without any prerequisites, but a user who
 prefers their own Alire-managed toolchain just has to put it earlier
-on PATH inside Zed's launched terminal.
+on PATH inside the terminal Zed launches.

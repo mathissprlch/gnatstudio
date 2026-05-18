@@ -241,6 +241,7 @@ members = [
     # Extensions
     #
 
+    "extensions/ada",
     "extensions/glsl",
     "extensions/html",
     "extensions/proto",

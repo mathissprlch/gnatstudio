@@ -84,7 +84,7 @@ Recommended starting points:
 ### Commands
 
 The proof LSP exposes these via `workspace/executeCommand`. They're
-bound to default Zed task labels (see `patches/0003-default-tasks.patch`),
+bound to default Zed task labels (see `zed/assets/settings/initial_tasks.json`),
 so they show up in the command palette under "task: spawn":
 
 * `gnatprove.run` — run on the full project
@@ -133,7 +133,7 @@ Two adapters are declared by the extension:
   Ada is weaker. Ada-specific gdb features (exception catchpoints by
   name, formatted tagged-record printing) are not available.
 
-Default debug tasks (see `patches/0004-default-debug-tasks.patch`):
+Default debug tasks (see `zed/assets/settings/initial_debug_tasks.json`):
 
 ```jsonc
 {
@@ -152,7 +152,7 @@ If you have multiple mains, override `program` in `.zed/debug.json`.
 
 ## Tasks
 
-`patches/0003-default-tasks.patch` ships:
+`zed/assets/settings/initial_tasks.json` ships:
 
 | Label                          | Command                                                       |
 | ------------------------------ | ------------------------------------------------------------- |

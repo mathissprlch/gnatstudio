@@ -26,4 +26,28 @@
     "console": "integratedTerminal",
     "type": "pwa-node",
   },
+  {
+    "label": "Debug active Ada main (gdb)",
+    "adapter": "GNAT",
+    "program": "$ZED_GNAT_MAIN",
+    "request": "launch",
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "stopOnEntry": false,
+    "preLaunchTask": "gprbuild",
+  },
+  {
+    "label": "Attach to running Ada process (gdb)",
+    "adapter": "GNAT",
+    "request": "attach",
+    "pid": "${command:pickProcess}",
+  },
+  {
+    "label": "Debug active Ada main (codelldb, macOS aarch64)",
+    "adapter": "codelldb",
+    "program": "$ZED_GNAT_MAIN",
+    "request": "launch",
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "preLaunchTask": "gprbuild",
+    "sourceLanguages": ["ada", "c", "cpp"],
+  },
 ]

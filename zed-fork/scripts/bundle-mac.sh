@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
 # Build Zed GNAT for macOS and produce a self-contained .app.
 #
+# Reads upstream Zed from the subtree at zed-fork/zed/. There is no
+# fetch/patch step: every change we want is already committed to the
+# subtree.
+#
 # Steps:
-#   1. Build Zed via its own bundle-mac script (which produces Zed.app).
-#   2. Rename the bundle (driven by the branding patch already applied).
-#   3. Inject the GNAT toolchain (ALS, gnatprove, gprbuild, rflx) into
+#   1. Build Zed via its own bundle-mac script (which produces .app).
+#   2. Inject the GNAT toolchain (ALS, gnatprove, gprbuild, rflx) into
 #      Contents/Resources/tools/.
-#   4. Drop a launcher shim into Contents/MacOS/ that exports
+#   3. Drop a launcher shim into Contents/MacOS/ that exports
 #      ZED_GNAT_RESOURCES + PATH so the bundled tools take precedence.
-#   5. Code-sign if SIGNING_IDENTITY is set, otherwise produce an unsigned
+#   4. Code-sign if SIGNING_IDENTITY is set, otherwise produce an unsigned
 #      bundle (suitable for ad-hoc local use).
 #
 # Required env (with sensible defaults):
@@ -23,7 +26,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VENDOR="${ROOT}/vendor/zed"
+ZED="${ROOT}/zed"
 RELEASE_CHANNEL="${RELEASE_CHANNEL:-stable}"
 TARGET_TRIPLE="${TARGET_TRIPLE:-$(rustc -vV | awk '/host:/ {print $2}')}"
 
@@ -38,9 +41,9 @@ if [[ -z "${TOOLCHAIN_DIR:-}" ]]; then
 fi
 
 # Stamp the release channel.
-echo "${RELEASE_CHANNEL}" > "${VENDOR}/crates/zed/RELEASE_CHANNEL"
+echo "${RELEASE_CHANNEL}" > "${ZED}/crates/zed/RELEASE_CHANNEL"
 
-pushd "${VENDOR}" >/dev/null
+pushd "${ZED}" >/dev/null
     # Zed's own bundler will install cargo-bundle if missing.
     ./script/bundle-mac "${TARGET_TRIPLE}"
 popd >/dev/null
@@ -53,8 +56,7 @@ case "${RELEASE_CHANNEL}" in
     dev)      APP_NAME="Zed GNAT Dev" ;;
 esac
 
-# Zed's bundler puts the app under target/<triple>/release/bundle/osx/.
-BUNDLE_DIR="${VENDOR}/target/${TARGET_TRIPLE}/release/bundle/osx"
+BUNDLE_DIR="${ZED}/target/${TARGET_TRIPLE}/release/bundle/osx"
 APP="${BUNDLE_DIR}/${APP_NAME}.app"
 
 if [[ ! -d "${APP}" ]]; then
@@ -68,7 +70,12 @@ TOOLS_DIR="${RESOURCES}/tools"
 mkdir -p "${TOOLS_DIR}"
 
 echo "Injecting toolchain from ${TOOLCHAIN_DIR}"
-rsync -a --delete "${TOOLCHAIN_DIR}/" "${TOOLS_DIR}/"
+if command -v rsync >/dev/null 2>&1; then
+    rsync -a --delete "${TOOLCHAIN_DIR}/" "${TOOLS_DIR}/"
+else
+    rm -rf "${TOOLS_DIR}"
+    cp -a "${TOOLCHAIN_DIR}" "${TOOLS_DIR}"
+fi
 
 # Launcher: wraps the real Zed binary so the bundled tools win on PATH.
 MACOS_DIR="${APP}/Contents/MacOS"
@@ -90,13 +97,10 @@ APP_RESOURCES="$(cd "${HERE}/../Resources" && pwd)"
 export ZED_GNAT_RESOURCES="${APP_RESOURCES}"
 export PATH="${APP_RESOURCES}/tools/bin:${PATH:-/usr/bin:/bin}"
 
-# Make GNAT's runtime libraries discoverable.
 if [[ -d "${APP_RESOURCES}/tools/lib" ]]; then
     export DYLD_FALLBACK_LIBRARY_PATH="${APP_RESOURCES}/tools/lib:${DYLD_FALLBACK_LIBRARY_PATH:-}"
 fi
 
-# RecordFlux ships as a Python package; make it importable from the bundled
-# python without polluting the user's site-packages.
 if [[ -d "${APP_RESOURCES}/tools/python" ]]; then
     export PYTHONPATH="${APP_RESOURCES}/tools/python:${PYTHONPATH:-}"
 fi
@@ -105,7 +109,6 @@ exec "${HERE}/zed-real" "$@"
 LAUNCH
 chmod +x "${LAUNCHER}"
 
-# Sign / notarize if credentials are available.
 if [[ -n "${SIGNING_IDENTITY:-}" ]]; then
     echo "Signing ${APP} with ${SIGNING_IDENTITY}"
     codesign --force --options runtime --timestamp \
