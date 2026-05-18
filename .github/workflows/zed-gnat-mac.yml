@@ -55,7 +55,11 @@ jobs:
       - name: Install build tooling
         run: |
           brew update
-          brew install cmake ninja foundationdb pkg-config python@3.12 rsync || true
+          # foundationdb is only needed by Zed's collab server, not the
+          # editor we're packaging; skip it. cmake/ninja/pkg-config/rsync
+          # are required by Zed's build; python@3.12 is for our LSP shims
+          # and for RecordFlux's venv.
+          brew install cmake ninja pkg-config python@3.12 rsync
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
