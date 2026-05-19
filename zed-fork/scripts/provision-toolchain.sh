@@ -108,6 +108,23 @@ install_recordflux() {
     fi
 }
 
+# Alire-staged binaries carry LC_RPATH entries that point to the build
+# machine's Alire toolchain dir (e.g. /Users/runner/.local/share/alire/...).
+# When the toolchain is dropped into a user's .app, dyld either fails to
+# find the libs at that path or — worse on Sonoma+ — rejects the binary
+# outright because alr install duplicates the LC_RPATH. Rewrite the
+# rpaths to use @loader_path so the binaries find their dylibs at the
+# bundle-relative ../lib regardless of where the .app lives.
+relocate_macho() {
+    if [[ "$(uname -s)" != "Darwin" ]]; then
+        return 0
+    fi
+    local script_dir
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    log "Relocating Mach-O binaries under ${TOOLCHAIN_DIR}"
+    python3 "${script_dir}/relocate-toolchain.py" "${TOOLCHAIN_DIR}"
+}
+
 main() {
     if ! command -v curl  >/dev/null 2>&1; then warn "curl is required"; exit 1; fi
     if ! command -v unzip >/dev/null 2>&1; then warn "unzip is required"; exit 1; fi
@@ -126,6 +143,8 @@ main() {
     alr_install spark2014
 
     install_recordflux
+
+    relocate_macho
 
     log "Staged toolchain at ${TOOLCHAIN_DIR}"
     if [[ -d "${TOOLCHAIN_DIR}/bin" ]]; then
