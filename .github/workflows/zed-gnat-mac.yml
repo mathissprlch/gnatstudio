@@ -84,7 +84,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: zed-fork/build/toolchain
-          key: gnat-toolchain-${{ matrix.target }}-${{ hashFiles('zed-fork/scripts/provision-toolchain.sh') }}
+          key: gnat-toolchain-${{ matrix.target }}-${{ hashFiles('zed-fork/scripts/provision-toolchain.sh', 'zed-fork/scripts/relocate-toolchain.py') }}
           save-always: true
 
       - name: Stage GNAT toolchain
