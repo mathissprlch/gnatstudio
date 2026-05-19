@@ -56,21 +56,6 @@ jobs:
         with:
           fetch-depth: 0   # subtree commits aren't reachable from a shallow clone
 
-      # The macos-14 image defaults to Xcode 15.4, whose libc++ enforces the
-       # full C++20 `std::contiguous_iterator` requirements (including
-       # `pointer_traits::element_type` on the iterator type). webrtc-sys's
-       # vendored `rust/cxx.h` predates the cxx-rs release that added the
-       # required member typedefs, so the static_assert in cxx.h:282 fails
-       # with `undefined template 'std::__pointer_traits_element_type<...>'`.
-       # Pin to Xcode 15.2 (macOS 14.2 SDK), whose libc++ accepts the older
-       # iterator shape. macos-13 (x86_64) ships Xcode 14.x with an even
-       # older libc++, so we leave it on its default.
-      - name: Select Xcode 15.2 (macos-14 only, webrtc-sys cxx.h compat)
-        if: matrix.runner == 'macos-14'
-        uses: maxim-lobanov/setup-xcode@v1
-        with:
-          xcode-version: '15.2.0'
-
       - name: Install build tooling
         run: |
           brew update
@@ -88,10 +73,8 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             zed-fork/zed/target
-          # Include Xcode/SDK marker so switching pinned Xcode invalidates the
-          # C++ artifacts (webrtc-sys, etc.) compiled against the old SDK.
-          key: zed-cargo-${{ matrix.target }}-xcode152-${{ hashFiles('zed-fork/zed/Cargo.lock') }}
-          restore-keys: zed-cargo-${{ matrix.target }}-xcode152-
+          key: zed-cargo-${{ matrix.target }}-${{ hashFiles('zed-fork/zed/Cargo.lock', 'zed-fork/scripts/patch-cxx-iterator.sh') }}
+          restore-keys: zed-cargo-${{ matrix.target }}-
 
       - name: Cache toolchain
         id: toolchain-cache
