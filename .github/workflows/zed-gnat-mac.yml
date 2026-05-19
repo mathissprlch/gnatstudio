@@ -75,6 +75,11 @@ jobs:
             zed-fork/zed/target
           key: zed-cargo-${{ matrix.target }}-${{ hashFiles('zed-fork/zed/Cargo.lock', 'zed-fork/scripts/patch-cxx-iterator.sh') }}
           restore-keys: zed-cargo-${{ matrix.target }}-
+          # Save even on failed builds: webrtc-sys and most Rust crates compile
+          # for ~60 min and the failures we've hit have all been in trailing
+          # wrapper steps, so leaving the compilation cache primed makes the
+          # next attempt 10x faster.
+          save-always: true
 
       - name: Cache toolchain
         id: toolchain-cache
@@ -82,6 +87,7 @@ jobs:
         with:
           path: zed-fork/build/toolchain
           key: gnat-toolchain-${{ matrix.target }}-${{ hashFiles('zed-fork/scripts/provision-toolchain.sh') }}
+          save-always: true
 
       - name: Stage GNAT toolchain
         if: steps.toolchain-cache.outputs.cache-hit != 'true'
