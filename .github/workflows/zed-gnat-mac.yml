@@ -40,8 +40,6 @@ jobs:
         include:
           - target: aarch64-apple-darwin
             runner: macos-14   # Apple Silicon
-          - target: x86_64-apple-darwin
-            runner: macos-13   # Intel
     env:
       TARGET_TRIPLE: ${{ matrix.target }}
       RELEASE_CHANNEL: ${{ github.event.inputs.release_channel || 'stable' }}
