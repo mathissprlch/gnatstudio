@@ -59,9 +59,24 @@ esac
 BUNDLE_DIR="${ZED}/target/${TARGET_TRIPLE}/release/bundle/osx"
 APP="${BUNDLE_DIR}/${APP_NAME}.app"
 
+# Upstream `zed/script/bundle-mac` moves the .app from bundle/osx/ into
+# target/${triple}/release/dmg/ as part of DMG creation, then builds the DMG
+# in target/${triple}/release/Zed-${arch}.dmg. We need the .app back in
+# bundle/osx/ so we can inject the GNAT toolchain into it (and so the CI
+# workflow's archive step finds it). The DMG that upstream just produced is
+# stale (no GNAT toolchain) and we ignore it; a fresh DMG, if we ever want
+# one for distribution, must be built after toolchain injection.
+DMG_STAGING="${ZED}/target/${TARGET_TRIPLE}/release/dmg/${APP_NAME}.app"
+if [[ ! -d "${APP}" && -d "${DMG_STAGING}" ]]; then
+    echo "Moving .app back from DMG staging dir to ${BUNDLE_DIR}"
+    mkdir -p "${BUNDLE_DIR}"
+    mv "${DMG_STAGING}" "${APP}"
+fi
+
 if [[ ! -d "${APP}" ]]; then
     echo "expected ${APP} after bundle-mac; got:" >&2
-    ls "${BUNDLE_DIR}" >&2
+    ls -la "${BUNDLE_DIR}" >&2 || true
+    ls -la "$(dirname "${DMG_STAGING}")" >&2 || true
     exit 3
 fi
 
