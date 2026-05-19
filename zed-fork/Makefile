@@ -33,14 +33,22 @@ export RELEASE_CHANNEL
 export TOOLCHAIN_DIR
 export TARGET_TRIPLE
 
-.PHONY: all toolchain app pull-upstream ci-mac clean
+.PHONY: all toolchain app pull-upstream ci-mac clean patch-cxx
 
 all: toolchain app
 
 toolchain:
 	bash scripts/provision-toolchain.sh
 
-app: toolchain
+# Fetch crates.io deps and patch the cxx Slice iterator. See
+# scripts/patch-cxx-iterator.sh for the rationale (libc++ 17+ requires
+# `element_type` on contiguous iterators; cxx 1.0.x doesn't ship it,
+# breaks webrtc-sys C++ compile).
+patch-cxx:
+	cd zed && cargo fetch
+	bash scripts/patch-cxx-iterator.sh
+
+app: toolchain patch-cxx
 	bash scripts/bundle-mac.sh
 
 pull-upstream:
