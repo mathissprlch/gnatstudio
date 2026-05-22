@@ -57,32 +57,34 @@
     // "tags": []
   },
   // ---- GNAT defaults shipped with Zed GNAT --------------------------------
-  // Override per-project by adding the same labels to `.zed/tasks.json`.
+  // These discover the project's .gpr at runtime (first *.gpr in the worktree
+  // root, where tasks run by default). Override per-project by adding the same
+  // labels to `.zed/tasks.json` with an explicit `-P your_project.gpr`.
   {
     "label": "gprbuild",
-    "command": "gprbuild",
-    "args": ["-P", "$ZED_GPR_FILE", "-j0", "-cargs", "-gnata", "-g"],
+    "command": "bash",
+    "args": ["-lc", "gpr=$(ls *.gpr 2>/dev/null | head -1); [ -n \"$gpr\" ] || { echo 'gprbuild: no .gpr found in project root' >&2; exit 1; }; echo \"building $gpr\"; exec gprbuild -P \"$gpr\" -j0 -cargs -g -gnata -fgnat-encodings=minimal"],
     "reveal": "always",
     "hide": "on_success",
     "tags": ["ada-build"]
   },
   {
     "label": "gprclean",
-    "command": "gprclean",
-    "args": ["-P", "$ZED_GPR_FILE"],
+    "command": "bash",
+    "args": ["-lc", "gpr=$(ls *.gpr 2>/dev/null | head -1); [ -n \"$gpr\" ] || { echo 'gprclean: no .gpr found in project root' >&2; exit 1; }; exec gprclean -P \"$gpr\""],
     "reveal": "always",
     "hide": "on_success"
   },
   {
     "label": "gnatprove (whole project)",
-    "command": "gnatprove",
-    "args": ["-P", "$ZED_GPR_FILE", "--level=2", "--report=all"],
+    "command": "bash",
+    "args": ["-lc", "gpr=$(ls *.gpr 2>/dev/null | head -1); [ -n \"$gpr\" ] || { echo 'gnatprove: no .gpr found in project root' >&2; exit 1; }; exec gnatprove -P \"$gpr\" --level=2 --report=all"],
     "reveal": "always"
   },
   {
     "label": "gnatprove (current file)",
-    "command": "gnatprove",
-    "args": ["-P", "$ZED_GPR_FILE", "-u", "$ZED_FILENAME", "--level=2", "--report=all"],
+    "command": "bash",
+    "args": ["-lc", "gpr=$(ls *.gpr 2>/dev/null | head -1); [ -n \"$gpr\" ] || { echo 'gnatprove: no .gpr found in project root' >&2; exit 1; }; exec gnatprove -P \"$gpr\" -u \"$ZED_FILENAME\" --level=2 --report=all"],
     "reveal": "always"
   },
   {
