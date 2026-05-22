@@ -127,45 +127,56 @@ Commands:
 
 Two adapters are declared by the extension:
 
-* `GNAT` — drives `gdb -i dap`. Requires gdb ≥ 14 (shipped in the
-  bundle's `tools/bin/gdb`).
-* `codelldb` — fallback for Apple Silicon, where gdb's coverage of
-  Ada is weaker. Ada-specific gdb features (exception catchpoints by
-  name, formatted tagged-record printing) are not available.
+* `codelldb` — the working default on macOS. Bundled at
+  `tools/codelldb/` and symlinked to `tools/bin/codelldb`. Gives
+  breakpoints, stepping, call stack, and registers today. **Ada
+  *variable* rendering is not yet available** with stock codelldb — see
+  `lldb-ada-debugging.md` for why and the roadmap to fix it.
+* `GNAT` — drives `gdb -i dap`. gdb has full Ada support but is only
+  practical on Linux/Intel or for cross/remote (embedded) targets, not
+  native arm64 macOS.
 
 Default debug tasks (see `zed/assets/settings/initial_debug_tasks.json`):
 
 ```jsonc
 {
-  "label": "Debug active Ada main (gdb)",
-  "adapter": "GNAT",
-  "program": "$ZED_GNAT_MAIN",
+  "label": "Debug active Ada main (codelldb)",
+  "adapter": "codelldb",
+  "program": "$ZED_WORKTREE_ROOT/$ZED_STEM",
   "request": "launch",
   "cwd": "$ZED_WORKTREE_ROOT",
   "preLaunchTask": "gprbuild"
 }
 ```
 
-`$ZED_GNAT_MAIN` is resolved by the Ada extension to the executable
-that ALS reports for the active `Main` attribute of the loaded GPR.
-If you have multiple mains, override `program` in `.zed/debug.json`.
+`program` uses the built-in `$ZED_STEM` (active file name without
+extension), assuming the executable is named after the main unit and
+lands in the worktree root (`Exec_Dir use "."` in the GPR) — e.g.
+debugging `main.adb` runs `./main`. If your GPR puts the executable
+elsewhere or you have multiple mains, override `program` in
+`.zed/debug.json`. (The earlier `$ZED_GNAT_MAIN` placeholder was never
+resolved by Zed and has been removed.)
 
 ## Tasks
 
-`zed/assets/settings/initial_tasks.json` ships:
+`zed/assets/settings/initial_tasks.json` ships the tasks below. Each
+discovers the project's `.gpr` at runtime (first `*.gpr` in the worktree
+root, where tasks run) rather than relying on an unresolved custom
+variable:
 
-| Label                          | Command                                                       |
+| Label                          | Effective command                                            |
 | ------------------------------ | ------------------------------------------------------------- |
-| `gprbuild`                     | `gprbuild -P $ZED_GPR_FILE -j0 -cargs -gnata -g`              |
-| `gprclean`                     | `gprclean -P $ZED_GPR_FILE`                                   |
-| `gnatprove (whole project)`    | `gnatprove -P $ZED_GPR_FILE --level=2 --report=all`           |
-| `gnatprove (current file)`    | `gnatprove -P $ZED_GPR_FILE -u $ZED_FILENAME --level=2 --report=all` |
+| `gprbuild`                     | `gprbuild -P <found.gpr> -j0 -cargs -g -gnata -fgnat-encodings=minimal` |
+| `gprclean`                     | `gprclean -P <found.gpr>`                                     |
+| `gnatprove (whole project)`    | `gnatprove -P <found.gpr> --level=2 --report=all`            |
+| `gnatprove (current file)`    | `gnatprove -P <found.gpr> -u $ZED_FILENAME --level=2 --report=all` |
 | `rflx generate`                | `rflx generate --target ada --output-directory generated $ZED_FILE` |
 | `rflx check (current file)`    | `rflx check $ZED_FILE`                                        |
 
-`$ZED_GPR_FILE` resolves to the first `.gpr` at the worktree root.
-Override per project by adding the same labels (with different args)
-to `.zed/tasks.json`.
+`-fgnat-encodings=minimal` makes GNAT emit standard DWARF 5, which is a
+prerequisite for the LLDB Ada type-system work (see
+`lldb-ada-debugging.md`). Override per project by adding the same labels
+(with explicit `-P your_project.gpr`) to `.zed/tasks.json`.
 
 ## A worked example — `transports-spark`-style project
 
