@@ -67,6 +67,18 @@ jobs:
           path: zed-fork/build/lldb-ada/liblldb
           key: liblldb-ada-${{ runner.arch }}-${{ env.LLVM_REF }}-${{ hashFiles('zed-fork/patches/**', 'zed-fork/scripts/build-lldb-ada.sh') }}
 
+      # An llvm+clang+lldb build needs ~18 GB; the hosted runner is tight.
+      # Drop simulators/device-support (never the toolchain) to reclaim space.
+      - name: Free disk space
+        if: steps.liblldb-cache.outputs.cache-hit != 'true'
+        run: |
+          df -h /
+          sudo rm -rf ~/Library/Developer/CoreSimulator/Devices/* 2>/dev/null || true
+          sudo rm -rf ~/Library/Developer/CoreSimulator/Caches/* 2>/dev/null || true
+          sudo rm -rf "$HOME/Library/Developer/Xcode/iOS DeviceSupport" 2>/dev/null || true
+          xcrun simctl delete unavailable 2>/dev/null || true
+          df -h /
+
       - name: Install build tooling
         if: steps.liblldb-cache.outputs.cache-hit != 'true'
         run: brew install cmake ninja ccache
