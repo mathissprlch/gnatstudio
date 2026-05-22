@@ -1,0 +1,109 @@
+name: Build LLDB (Ada) — macOS
+
+# Builds a liblldb carrying the Ada type-system patches (zed-fork/patches) on a
+# native arm64 macOS runner. This is the authoritative build that the Linux dev
+# box cannot do; it is also where we iterate on the patches.
+#
+# Heads-up on resources: a full llvm+clang+lldb build needs ~18-20 GB of disk
+# and, on the 3-core GitHub-hosted macos-14 runner, a couple of hours cold.
+# Two caches keep iteration cheap:
+#   * the *built* liblldb, keyed on the patch set + pin -> unchanged patches
+#     skip the build entirely;
+#   * ccache, so a patch change recompiles only TypeSystemClang.cpp + deps.
+# If the hosted runner runs out of disk/time, dispatch with a larger or
+# self-hosted runner label via the `runner` input.
+
+on:
+  push:
+    branches: [master, 'claude/**']
+    paths:
+      - 'zed-fork/patches/**'
+      - 'zed-fork/scripts/build-lldb-ada.sh'
+      - '.github/workflows/zed-lldb-ada-mac.yml'
+  pull_request:
+    paths:
+      - 'zed-fork/patches/**'
+      - 'zed-fork/scripts/build-lldb-ada.sh'
+      - '.github/workflows/zed-lldb-ada-mac.yml'
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: 'Runner label (e.g. macos-14, macos-14-xlarge, or a self-hosted label)'
+        default: 'macos-14'
+
+concurrency:
+  group: lldb-ada-mac-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  # Keep in sync with LLVM_REF in zed-fork/scripts/build-lldb-ada.sh.
+  LLVM_REF: cd708029e0b2869e80abe31ddb175f7c35361f90
+
+jobs:
+  liblldb:
+    name: Build patched liblldb (aarch64)
+    runs-on: ${{ github.event.inputs.runner || 'macos-14' }}
+    env:
+      WORK: ${{ github.workspace }}/zed-fork/build/lldb-ada/work
+      OUT: ${{ github.workspace }}/zed-fork/build/lldb-ada/liblldb
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show runner resources
+        run: |
+          echo "arch: $(uname -m)  cpus: $(sysctl -n hw.ncpu)"
+          df -h /
+          echo "RAM (bytes): $(sysctl -n hw.memsize)"
+
+      # If the patch set + pin are unchanged, restore the prebuilt dylib and
+      # skip the whole build below.
+      - name: Cache built liblldb
+        id: liblldb-cache
+        uses: actions/cache@v4
+        with:
+          path: zed-fork/build/lldb-ada/liblldb
+          key: liblldb-ada-${{ runner.arch }}-${{ env.LLVM_REF }}-${{ hashFiles('zed-fork/patches/**', 'zed-fork/scripts/build-lldb-ada.sh') }}
+
+      - name: Install build tooling
+        if: steps.liblldb-cache.outputs.cache-hit != 'true'
+        run: brew install cmake ninja ccache
+
+      - name: Cache ccache
+        if: steps.liblldb-cache.outputs.cache-hit != 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: lldb-ada-ccache-${{ runner.arch }}-${{ hashFiles('zed-fork/patches/**') }}
+          restore-keys: lldb-ada-ccache-${{ runner.arch }}-
+          save-always: true
+
+      - name: Build liblldb
+        if: steps.liblldb-cache.outputs.cache-hit != 'true'
+        env:
+          TARGETS: AArch64
+          LLDB_ENABLE_PYTHON: 'OFF'
+          CMAKE_ARGS: -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          CCACHE_MAXSIZE: 3G
+          CCACHE_COMPRESS: '1'
+        run: |
+          set -euo pipefail
+          export CCACHE_DIR="$HOME/.cache/ccache"
+          ccache --zero-stats || true
+          bash zed-fork/scripts/build-lldb-ada.sh
+          ccache --show-stats || true
+          # Keep only the dylib; drop the ~18 GB build tree before caching/upload.
+          mkdir -p "$OUT"
+          cp -a "$WORK"/build/lib/liblldb*.dylib "$OUT"/
+          rm -rf "$WORK"
+          ls -la "$OUT"
+
+      - name: Upload liblldb
+        uses: actions/upload-artifact@v4
+        with:
+          name: liblldb-ada-aarch64
+          path: zed-fork/build/lldb-ada/liblldb/*
+          if-no-files-found: error
+          retention-days: 14
