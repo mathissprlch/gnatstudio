@@ -173,3 +173,26 @@ jobs:
           path: zed-fork/build/lldb-ada/liblldb/*
           if-no-files-found: error
           retention-days: 14
+
+      # Swap our patched liblldb into codelldb v1.11.5 (also LLDB 19.1.x) and
+      # emit a .vsix that provision-toolchain.sh consumes via $CODELLDB_DIST.
+      - name: Repackage codelldb with patched liblldb
+        id: repackage
+        if: steps.liblldb-cache.outputs.cache-hit == 'true' || steps.build.conclusion == 'success'
+        env:
+          CODELLDB_VERSION: v1.11.5
+          CL_OUT: ${{ github.workspace }}/zed-fork/build/lldb-ada/codelldb-ada
+        run: |
+          set -euo pipefail
+          LIBLLDB="$OUT" OUTDIR="$CL_OUT" bash zed-fork/scripts/repackage-codelldb.sh
+          ( cd "$CL_OUT" && zip -q -r -X "$RUNNER_TEMP/codelldb-ada-aarch64.vsix" . )
+          ls -lh "$RUNNER_TEMP/codelldb-ada-aarch64.vsix"
+
+      - name: Upload codelldb (Ada)
+        if: steps.repackage.conclusion == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: codelldb-ada-aarch64
+          path: ${{ runner.temp }}/codelldb-ada-aarch64.vsix
+          if-no-files-found: error
+          retention-days: 14
