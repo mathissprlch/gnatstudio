@@ -1,0 +1,37 @@
+# M0: route Ada compilation units through LLDB's Clang type system.
+#
+# Without this, LLDB has no type system for DW_LANG_Ada* and renders zero
+# local/argument variables (see docs/lldb-ada-debugging.md). This patch makes
+# TypeSystemClang claim the Ada language codes so DWARF produced with
+# `-fgnat-encodings=minimal` is parsed by DWARFASTParserClang. Scalars,
+# arrays, and plain records render (names appear C-flavored, e.g.
+# `pkg__counter`; variant records are imperfect until a real TypeSystemAda
+# lands in M1+).
+#
+# Apply against an llvm-project checkout:
+#     cd llvm-project && git apply /path/to/lldb-ada-typesystem.patch
+#
+# The surrounding context of TypeSystemClangSupportsLanguage drifts between
+# LLVM releases. If `git apply` rejects the hunk, open the file and add the
+# four `eLanguageTypeAda*` lines to that predicate by hand — that is the
+# entire change.
+#
+# Tested-shape against: llvm-project release/18.x and release/19.x.
+--- a/lldb/source/Plugins/TypeSystem/Clang/TypeSystemClang.cpp
++++ b/lldb/source/Plugins/TypeSystem/Clang/TypeSystemClang.cpp
+@@ static bool TypeSystemClangSupportsLanguage(lldb::LanguageType language) {
+   return language == eLanguageTypeUnknown || // Clang sometimes emits this.
+          Language::LanguageIsC(language) ||
+          Language::LanguageIsCPlusPlus(language) ||
+          Language::LanguageIsObjC(language) ||
+          language == eLanguageTypeExtRenderScript ||
++         // Zed-GNAT M0: borrow the Clang type system for Ada units so DWARF
++         // (emitted with -fgnat-encodings=minimal) yields scalars, arrays
++         // and records. Replace with a dedicated TypeSystemAda in M1+.
++         language == eLanguageTypeAda83 ||
++         language == eLanguageTypeAda95 ||
++         language == eLanguageTypeAda2005 ||
++         language == eLanguageTypeAda2012 ||
+          language == eLanguageTypeC11 ||
+          language == eLanguageTypeC89;
+ }
