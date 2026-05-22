@@ -10,9 +10,10 @@ name: Build LLDB (Ada) — macOS
 #   * the *built* liblldb, keyed on the patch set + pin -> unchanged patches
 #     skip the build entirely;
 #   * ccache, so a patch change recompiles only TypeSystemClang.cpp + deps.
-# On failure the job posts df + the build-log tail to the PR so the cause is
-# visible. If the hosted runner runs out of disk/time, dispatch with a larger
-# or self-hosted runner label via the `runner` input.
+# The build step traces every command (set -x) into a log and, on ANY failure,
+# posts df + the log tail to the PR so the cause is visible without Actions-log
+# access. If the runner runs out of disk/time, dispatch with a larger or
+# self-hosted runner label via the `runner` input.
 
 on:
   # PR-branch commits arrive via pull_request (one run each); push is master-only
@@ -72,22 +73,6 @@ jobs:
           path: zed-fork/build/lldb-ada/liblldb
           key: liblldb-ada-${{ runner.arch }}-${{ env.LLVM_REF }}-${{ hashFiles('zed-fork/patches/**', 'zed-fork/scripts/build-lldb-ada.sh') }}
 
-      # An llvm+clang+lldb build needs ~18 GB; the hosted runner is tight.
-      # Drop simulators/device-support (never the toolchain) to reclaim space.
-      - name: Free disk space
-        if: steps.liblldb-cache.outputs.cache-hit != 'true'
-        run: |
-          df -h /
-          sudo rm -rf ~/Library/Developer/CoreSimulator/Devices/* 2>/dev/null || true
-          sudo rm -rf ~/Library/Developer/CoreSimulator/Caches/* 2>/dev/null || true
-          sudo rm -rf "$HOME/Library/Developer/Xcode/iOS DeviceSupport" 2>/dev/null || true
-          xcrun simctl delete unavailable 2>/dev/null || true
-          df -h /
-
-      - name: Install build tooling
-        if: steps.liblldb-cache.outputs.cache-hit != 'true'
-        run: brew install cmake ninja ccache
-
       - name: Cache ccache
         if: steps.liblldb-cache.outputs.cache-hit != 'true'
         uses: actions/cache@v4
@@ -97,6 +82,9 @@ jobs:
           restore-keys: lldb-ada-ccache-${{ runner.arch }}-
           save-always: true
 
+      # One step so every command (disk reclaim, brew, cmake configure, ninja)
+      # is traced into BUILD_LOG; the failure reporter then has the real error
+      # regardless of which command failed.
       - name: Build liblldb
         id: build
         if: steps.liblldb-cache.outputs.cache-hit != 'true'
@@ -107,21 +95,34 @@ jobs:
           CCACHE_MAXSIZE: 3G
           CCACHE_COMPRESS: '1'
         run: |
-          set -euo pipefail
+          set -uo pipefail
           mkdir -p "$(dirname "$BUILD_LOG")"
           export CCACHE_DIR="$HOME/.cache/ccache"
-          ccache --zero-stats || true
-          set -o pipefail
-          bash zed-fork/scripts/build-lldb-ada.sh 2>&1 | tee -a "$BUILD_LOG"
-          ccache --show-stats 2>&1 | tee -a "$BUILD_LOG" || true
-          # Keep only the dylib; drop the ~18 GB build tree before caching/upload.
-          mkdir -p "$OUT"
-          cp -a "$WORK"/build/lib/liblldb*.dylib "$OUT"/
-          rm -rf "$WORK"
-          ls -la "$OUT"
+          {
+            set -ex
+            # Reclaim disk (simulators/device-support only, never the toolchain).
+            df -h /
+            sudo rm -rf ~/Library/Developer/CoreSimulator/Devices/* 2>/dev/null || true
+            sudo rm -rf ~/Library/Developer/CoreSimulator/Caches/* 2>/dev/null || true
+            sudo rm -rf "$HOME/Library/Developer/Xcode/iOS DeviceSupport" 2>/dev/null || true
+            xcrun simctl delete unavailable 2>/dev/null || true
+            df -h /
+            # Build tooling.
+            brew install cmake ninja ccache
+            cmake --version; ninja --version; ccache --version | head -1
+            ccache --zero-stats || true
+            # Patched liblldb.
+            bash zed-fork/scripts/build-lldb-ada.sh
+            ccache --show-stats || true
+            # Keep only the dylib; drop the ~18 GB build tree before cache/upload.
+            mkdir -p "$OUT"
+            cp -a "$WORK"/build/lib/liblldb*.dylib "$OUT"/
+            rm -rf "$WORK"
+            ls -la "$OUT"
+          } 2>&1 | tee -a "$BUILD_LOG"
 
       - name: Report failure to PR
-        if: failure() && steps.build.conclusion == 'failure'
+        if: failure()
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -132,13 +133,13 @@ jobs:
             echo "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
             echo "Commit: \`${{ github.sha }}\`"
             echo
-            echo "Disk at failure:"
+            echo "Disk now:"
             echo '```'
             df -h /
             echo '```'
-            echo "Last 200 lines of build log:"
+            echo "Last 250 lines of build log:"
             echo '```'
-            tail -n 200 "$BUILD_LOG" 2>/dev/null || echo "(no build log captured)"
+            tail -n 250 "$BUILD_LOG" 2>/dev/null || echo "(no build log captured — failed before the build step)"
             echo '```'
           } > /tmp/lldb-fail.md
           cat /tmp/lldb-fail.md
