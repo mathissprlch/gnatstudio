@@ -1,5 +1,10 @@
 name: Build Zed GNAT (macOS)
 
+# One run does it all: build the Ada-patched liblldb, repackage codelldb around
+# it, then build the Zed GNAT .app with that patched codelldb baked into the
+# bundled toolchain. The `build` job depends on `liblldb`, downloads its
+# codelldb-ada artifact, and injects it before `make app` bundles the toolchain.
+
 on:
   push:
     branches:
@@ -28,11 +33,149 @@ concurrency:
 
 permissions:
   contents: read
-  pull-requests: write   # for the failure log → PR comment step
+  pull-requests: write   # for the failure log → PR comment steps
+
+env:
+  # Keep in sync with LLVM_REF in zed-fork/scripts/build-lldb-ada.sh.
+  LLVM_REF: cd708029e0b2869e80abe31ddb175f7c35361f90
 
 jobs:
+  # ---------------------------------------------------------------------------
+  # Patched liblldb + repackaged codelldb (the Ada debugger half).
+  # ---------------------------------------------------------------------------
+  liblldb:
+    name: Build patched liblldb (aarch64)
+    runs-on: macos-14
+    env:
+      WORK: ${{ github.workspace }}/zed-fork/build/lldb-ada/work
+      OUT: ${{ github.workspace }}/zed-fork/build/lldb-ada/liblldb
+      BUILD_LOG: ${{ github.workspace }}/zed-fork/build/lldb-ada/build.log
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show runner resources
+        run: |
+          echo "arch: $(uname -m)  cpus: $(sysctl -n hw.ncpu)"
+          df -h /
+          echo "RAM (bytes): $(sysctl -n hw.memsize)"
+
+      # Unchanged patches -> restore the prebuilt dylib and skip the build.
+      # Key on the .patch files only (doc/README edits must not bust it).
+      - name: Cache built liblldb
+        id: liblldb-cache
+        uses: actions/cache@v4
+        with:
+          path: zed-fork/build/lldb-ada/liblldb
+          key: liblldb-ada-${{ runner.arch }}-${{ env.LLVM_REF }}-${{ hashFiles('zed-fork/patches/*.patch', 'zed-fork/scripts/build-lldb-ada.sh') }}
+
+      - name: Cache ccache
+        if: steps.liblldb-cache.outputs.cache-hit != 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: lldb-ada-ccache-${{ runner.arch }}-${{ hashFiles('zed-fork/patches/*.patch') }}
+          restore-keys: lldb-ada-ccache-${{ runner.arch }}-
+          save-always: true
+
+      # One traced step so disk/brew/cmake/ninja all land in BUILD_LOG and the
+      # failure reporter has the real error regardless of which command failed.
+      - name: Build liblldb
+        id: build
+        if: steps.liblldb-cache.outputs.cache-hit != 'true'
+        env:
+          TARGETS: AArch64
+          LLDB_ENABLE_PYTHON: 'OFF'
+          CMAKE_ARGS: -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          CCACHE_MAXSIZE: 3G
+          CCACHE_COMPRESS: '1'
+        run: |
+          set -uo pipefail
+          mkdir -p "$(dirname "$BUILD_LOG")"
+          export CCACHE_DIR="$HOME/.cache/ccache"
+          {
+            set -ex
+            df -h /
+            brew install cmake ninja ccache
+            cmake --version; ninja --version; ccache --version | head -1
+            ccache --zero-stats || true
+            bash zed-fork/scripts/build-lldb-ada.sh
+            ccache --show-stats || true
+            mkdir -p "$OUT"
+            cp -a "$WORK"/build/lib/liblldb*.dylib "$OUT"/
+            rm -rf "$WORK"
+            ls -la "$OUT"
+          } 2>&1 | tee -a "$BUILD_LOG"
+
+      - name: Report liblldb failure to PR
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set +e
+          {
+            echo "### liblldb build failed — \`aarch64\` (${{ github.event_name }})"
+            echo
+            echo "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo "Commit: \`${{ github.sha }}\`"
+            echo
+            echo "Disk now:"
+            echo '```'
+            df -h /
+            echo '```'
+            echo "Last 250 lines of build log:"
+            echo '```'
+            tail -n 250 "$BUILD_LOG" 2>/dev/null || echo "(no build log captured)"
+            echo '```'
+          } > /tmp/lldb-fail.md
+          cat /tmp/lldb-fail.md
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          if [[ -z "$PR_NUMBER" ]]; then
+            PR_NUMBER=$(gh pr list --repo "${{ github.repository }}" \
+                          --head "${{ github.ref_name }}" \
+                          --state open --json number --jq '.[0].number // empty')
+          fi
+          if [[ -n "$PR_NUMBER" ]]; then
+            gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}" --body-file /tmp/lldb-fail.md
+          fi
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lldb-ada-build-log
+          path: zed-fork/build/lldb-ada/build.log
+          if-no-files-found: ignore
+          retention-days: 14
+
+      # Swap our patched liblldb into codelldb v1.11.5 (also LLDB 19.1.x) and
+      # emit a .vsix the build job injects into the toolchain.
+      - name: Repackage codelldb with patched liblldb
+        id: repackage
+        if: steps.liblldb-cache.outputs.cache-hit == 'true' || steps.build.conclusion == 'success'
+        env:
+          CODELLDB_VERSION: v1.11.5
+          CL_OUT: ${{ github.workspace }}/zed-fork/build/lldb-ada/codelldb-ada
+        run: |
+          set -euo pipefail
+          LIBLLDB="$OUT" OUTDIR="$CL_OUT" bash zed-fork/scripts/repackage-codelldb.sh
+          ( cd "$CL_OUT" && zip -q -r -X "$RUNNER_TEMP/codelldb-ada-aarch64.vsix" . )
+          ls -lh "$RUNNER_TEMP/codelldb-ada-aarch64.vsix"
+
+      - name: Upload codelldb (Ada)
+        if: steps.repackage.conclusion == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: codelldb-ada-aarch64
+          path: ${{ runner.temp }}/codelldb-ada-aarch64.vsix
+          if-no-files-found: error
+          retention-days: 14
+
+  # ---------------------------------------------------------------------------
+  # Zed GNAT .app, with the patched codelldb baked into the bundled toolchain.
+  # ---------------------------------------------------------------------------
   build:
     name: Build .app (${{ matrix.target }})
+    needs: liblldb
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -47,12 +190,20 @@ jobs:
       CARGO_TERM_COLOR: always
       RUST_BACKTRACE: short
       BUILD_LOG: ${{ github.workspace }}/zed-fork/build/build.log
+      # Patched codelldb (downloaded below) -> provision-toolchain.sh bundles it.
+      CODELLDB_DIST: ${{ github.workspace }}/zed-fork/build/codelldb-ada/codelldb-ada-aarch64.vsix
 
     steps:
       - name: Checkout fork
         uses: actions/checkout@v4
         with:
           fetch-depth: 0   # subtree commits aren't reachable from a shallow clone
+
+      - name: Download patched codelldb
+        uses: actions/download-artifact@v4
+        with:
+          name: codelldb-ada-aarch64
+          path: zed-fork/build/codelldb-ada
 
       - name: Install build tooling
         run: |
@@ -94,6 +245,20 @@ jobs:
           mkdir -p build
           make toolchain 2>&1 | tee -a "$BUILD_LOG"
 
+      # Guarantee the patched codelldb is in the toolchain whether it was just
+      # staged or restored from cache (make toolchain is skipped on a cache hit).
+      - name: Inject patched codelldb
+        run: |
+          set -euo pipefail
+          test -f "$CODELLDB_DIST" || { echo "patched codelldb missing at $CODELLDB_DIST"; exit 1; }
+          DEST="$TOOLCHAIN_DIR/codelldb"
+          rm -rf "$DEST"; mkdir -p "$DEST" "$TOOLCHAIN_DIR/bin"
+          unzip -q "$CODELLDB_DIST" -d "$DEST"
+          ln -sf "../codelldb/extension/adapter/codelldb" "$TOOLCHAIN_DIR/bin/codelldb"
+          chmod +x "$DEST/extension/adapter/codelldb"
+          test -x "$DEST/extension/adapter/codelldb"
+          echo "patched codelldb injected into $DEST"
+
       - name: Build Zed GNAT.app
         id: build_app
         working-directory: zed-fork
@@ -130,10 +295,8 @@ jobs:
           } > zed-fork/build/failure.md
           cat zed-fork/build/failure.md
 
-          # Only post on pull_request events (we need a PR number)
           PR_NUMBER="${{ github.event.pull_request.number }}"
           if [[ -z "$PR_NUMBER" ]]; then
-            # Push-event runs: look up an open PR for this head ref.
             PR_NUMBER=$(gh pr list --repo "${{ github.repository }}" \
                           --head "${{ github.ref_name }}" \
                           --state open --json number --jq '.[0].number // empty')
