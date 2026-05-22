@@ -30,11 +30,21 @@ zed-fork/scripts/build-lldb-ada.sh                        # Release, AArch64;X86
 LLDB_ENABLE_PYTHON=OFF zed-fork/scripts/build-lldb-ada.sh # quick compile-check
 ```
 
-Then repackage codelldb (github.com/vadimcn/codelldb) against the resulting
-`liblldb`: point its Rust adapter build at it, or swap the dylib inside a
-prebuilt codelldb VSIX's `extension/lldb/lib/` and re-sign. Set `$CODELLDB_DIST`
-to that build so `scripts/provision-toolchain.sh` bundles it instead of the
-upstream release.
+Then repackage codelldb around it with `scripts/repackage-codelldb.sh` (macOS),
+which downloads codelldb v1.11.5 (also LLDB 19.1.x, so ABI-compatible), swaps in
+our dylib under the exact name its adapter links, and ad-hoc re-signs both:
+
+```sh
+LIBLLDB=zed-fork/build/lldb-ada/liblldb OUTDIR=/tmp/codelldb-ada \
+  zed-fork/scripts/repackage-codelldb.sh
+```
+
+CI does the build + repackage automatically and uploads the result as the
+`codelldb-ada-aarch64` artifact (a `.vsix`). Point
+`scripts/provision-toolchain.sh` at it via `CODELLDB_DIST=/path/to/foo.vsix`
+(or an unpacked dir) to bundle it instead of upstream. If you fetched the
+artifact through a browser, clear quarantine first:
+`xattr -dr com.apple.quarantine <path>`.
 
 The result is a codelldb whose `extension/adapter/codelldb` loads our patched
 `liblldb`. `scripts/provision-toolchain.sh` will prefer a codelldb found at
