@@ -10,12 +10,15 @@ name: Build LLDB (Ada) — macOS
 #   * the *built* liblldb, keyed on the patch set + pin -> unchanged patches
 #     skip the build entirely;
 #   * ccache, so a patch change recompiles only TypeSystemClang.cpp + deps.
-# If the hosted runner runs out of disk/time, dispatch with a larger or
-# self-hosted runner label via the `runner` input.
+# On failure the job posts df + the build-log tail to the PR so the cause is
+# visible. If the hosted runner runs out of disk/time, dispatch with a larger
+# or self-hosted runner label via the `runner` input.
 
 on:
+  # PR-branch commits arrive via pull_request (one run each); push is master-only
+  # so the PR branch does not double-trigger.
   push:
-    branches: [master, 'claude/**']
+    branches: [master]
     paths:
       - 'zed-fork/patches/**'
       - 'zed-fork/scripts/build-lldb-ada.sh'
@@ -33,10 +36,11 @@ on:
 
 concurrency:
   group: lldb-ada-mac-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
+  pull-requests: write   # for the on-failure PR report
 
 env:
   # Keep in sync with LLVM_REF in zed-fork/scripts/build-lldb-ada.sh.
@@ -49,6 +53,7 @@ jobs:
     env:
       WORK: ${{ github.workspace }}/zed-fork/build/lldb-ada/work
       OUT: ${{ github.workspace }}/zed-fork/build/lldb-ada/liblldb
+      BUILD_LOG: ${{ github.workspace }}/zed-fork/build/lldb-ada/build.log
     steps:
       - uses: actions/checkout@v4
 
@@ -93,6 +98,7 @@ jobs:
           save-always: true
 
       - name: Build liblldb
+        id: build
         if: steps.liblldb-cache.outputs.cache-hit != 'true'
         env:
           TARGETS: AArch64
@@ -102,17 +108,64 @@ jobs:
           CCACHE_COMPRESS: '1'
         run: |
           set -euo pipefail
+          mkdir -p "$(dirname "$BUILD_LOG")"
           export CCACHE_DIR="$HOME/.cache/ccache"
           ccache --zero-stats || true
-          bash zed-fork/scripts/build-lldb-ada.sh
-          ccache --show-stats || true
+          set -o pipefail
+          bash zed-fork/scripts/build-lldb-ada.sh 2>&1 | tee -a "$BUILD_LOG"
+          ccache --show-stats 2>&1 | tee -a "$BUILD_LOG" || true
           # Keep only the dylib; drop the ~18 GB build tree before caching/upload.
           mkdir -p "$OUT"
           cp -a "$WORK"/build/lib/liblldb*.dylib "$OUT"/
           rm -rf "$WORK"
           ls -la "$OUT"
 
+      - name: Report failure to PR
+        if: failure() && steps.build.conclusion == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set +e
+          {
+            echo "### liblldb build failed — \`aarch64\` (${{ github.event_name }})"
+            echo
+            echo "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo "Commit: \`${{ github.sha }}\`"
+            echo
+            echo "Disk at failure:"
+            echo '```'
+            df -h /
+            echo '```'
+            echo "Last 200 lines of build log:"
+            echo '```'
+            tail -n 200 "$BUILD_LOG" 2>/dev/null || echo "(no build log captured)"
+            echo '```'
+          } > /tmp/lldb-fail.md
+          cat /tmp/lldb-fail.md
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          if [[ -z "$PR_NUMBER" ]]; then
+            PR_NUMBER=$(gh pr list --repo "${{ github.repository }}" \
+                          --head "${{ github.ref_name }}" \
+                          --state open --json number --jq '.[0].number // empty')
+          fi
+          if [[ -n "$PR_NUMBER" ]]; then
+            gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}" --body-file /tmp/lldb-fail.md
+            echo "Posted failure to PR #$PR_NUMBER"
+          else
+            echo "No open PR for ${{ github.ref_name }}; skipping comment"
+          fi
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lldb-ada-build-log
+          path: zed-fork/build/lldb-ada/build.log
+          if-no-files-found: ignore
+          retention-days: 14
+
       - name: Upload liblldb
+        if: steps.liblldb-cache.outputs.cache-hit == 'true' || steps.build.conclusion == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: liblldb-ada-aarch64
