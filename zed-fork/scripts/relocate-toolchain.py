@@ -125,6 +125,10 @@ def main(argv: list[str]) -> int:
     for path in tools_dir.rglob("*"):
         if not path.is_file() or path.is_symlink():
             continue
+        # codelldb ships self-contained and code-signed; mutating its Mach-O
+        # headers would break its signature and its own dylib resolution.
+        if "codelldb" in path.parts:
+            continue
         if not is_macho(path):
             continue
         scanned += 1
