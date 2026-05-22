@@ -105,11 +105,13 @@ support" into "write a focused DWARF5 → Ada type system."
 
 Milestones:
 
-* **M0 — language→type-system mapping.** Patch
-  `SymbolFileDWARF::GetTypeSystemForLanguage` so `DW_LANG_Ada*` returns a
-  type system instead of erroring. The cheapest first cut maps Ada to the
-  existing `TypeSystemClang`, so DWARF records/arrays/scalars parse as if C
-  (names C-flavored like `pkg__counter`, variant records imperfect). See
+* **M0 — language→type-system mapping.** Make `TypeSystemClang` advertise the
+  `DW_LANG_Ada*` codes (`TypeSystemClangSupportsLanguage` +
+  `GetSupportedLanguagesForTypes`) so the PluginManager routes Ada units to it
+  instead of `GetTypeSystemForLanguage(ada95)` erroring — the same shim LLDB
+  already uses for Rust and D. DWARF records/arrays/scalars then parse as if C
+  (names C-flavored like `pkg__counter`, variant records imperfect). Verified
+  to apply and compile against release/19.x; see
   `patches/lldb-ada-typesystem.patch`.
 * **M1 — core types** via a real `DWARFASTParserAda`: scalars, modular types,
   enums, constrained arrays, plain records, access types.
