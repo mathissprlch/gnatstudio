@@ -21,6 +21,7 @@ set -euo pipefail
 
 TOOLCHAIN_DIR="${TOOLCHAIN_DIR:-${PWD}/build/toolchain}"
 ALIRE_VERSION="${ALIRE_VERSION:-2.0.2}"
+CODELLDB_VERSION="${CODELLDB_VERSION:-v1.11.5}"
 
 mkdir -p "${TOOLCHAIN_DIR}/bin"
 
@@ -108,6 +109,87 @@ install_recordflux() {
     fi
 }
 
+# Bundle the codelldb DAP adapter so the GNAT/codelldb debug scenarios can
+# actually launch from the shipped .app. Stock codelldb gives working
+# breakpoints/stepping/registers; Ada *variable* rendering needs a patched
+# liblldb (see patches/README.md). CI can inject a patched build by setting
+# CODELLDB_DIST to a directory or .vsix; otherwise we fetch the upstream
+# release. Failures are tolerated so a codelldb hiccup never breaks the app.
+bundle_codelldb() {
+    if [[ "$(uname -s)" != "Darwin" ]]; then
+        return 0
+    fi
+    local dest="${TOOLCHAIN_DIR}/codelldb"
+    local adapter="${dest}/extension/adapter/codelldb"
+
+    link_adapter() {
+        if [[ -x "${adapter}" ]]; then
+            chmod +x "${adapter}" 2>/dev/null || true
+            ln -sf "../codelldb/extension/adapter/codelldb" "${TOOLCHAIN_DIR}/bin/codelldb"
+            log "staged codelldb -> ${TOOLCHAIN_DIR}/bin/codelldb"
+            return 0
+        fi
+        return 1
+    }
+
+    if link_adapter; then
+        log "codelldb already staged at ${dest}"
+        return 0
+    fi
+
+    mkdir -p "${dest}"
+
+    # CI-injected patched build (directory tree or .vsix zip).
+    if [[ -n "${CODELLDB_DIST:-}" ]]; then
+        log "using CODELLDB_DIST=${CODELLDB_DIST}"
+        if [[ -d "${CODELLDB_DIST}" ]]; then
+            cp -a "${CODELLDB_DIST}/." "${dest}/"
+        elif [[ -f "${CODELLDB_DIST}" ]]; then
+            (cd "${dest}" && unzip -q "${CODELLDB_DIST}") || warn "failed to unzip CODELLDB_DIST"
+        else
+            warn "CODELLDB_DIST=${CODELLDB_DIST} not found"
+        fi
+        link_adapter || warn "codelldb adapter missing after CODELLDB_DIST install"
+        return 0
+    fi
+
+    local arch
+    case "$(uname -m)" in
+        arm64|aarch64) arch="arm64" ;;
+        x86_64)        arch="x64"   ;;
+        *) warn "no codelldb mapping for arch $(uname -m); skipping"; return 0 ;;
+    esac
+
+    local base="https://github.com/vadimcn/codelldb/releases/download/${CODELLDB_VERSION}"
+    # Asset naming changed across releases; try modern then legacy forms.
+    local names=("codelldb-darwin-${arch}.vsix")
+    case "${arch}" in
+        arm64) names+=("codelldb-aarch64-darwin.vsix") ;;
+        x64)   names+=("codelldb-x86_64-darwin.vsix")  ;;
+    esac
+
+    local tmp got=""
+    tmp="$(mktemp -d)"
+    local n
+    for n in "${names[@]}"; do
+        log "downloading ${base}/${n}"
+        if curl --fail --silent --show-error --location --output "${tmp}/codelldb.vsix" "${base}/${n}"; then
+            got="yes"; break
+        fi
+    done
+    if [[ -z "${got}" ]]; then
+        warn "could not download codelldb ${CODELLDB_VERSION}; the bundle will have no debug adapter"
+        rm -rf "${tmp}"; return 0
+    fi
+    if ! (cd "${dest}" && unzip -q "${tmp}/codelldb.vsix"); then
+        warn "failed to extract codelldb vsix; skipping"
+        rm -rf "${tmp}"; return 0
+    fi
+    rm -rf "${tmp}"
+
+    link_adapter || warn "codelldb adapter binary not found after extraction"
+}
+
 # Alire-staged binaries carry LC_RPATH entries that point to the build
 # machine's Alire toolchain dir (e.g. /Users/runner/.local/share/alire/...).
 # When the toolchain is dropped into a user's .app, dyld either fails to
@@ -143,6 +225,8 @@ main() {
     alr_install spark2014
 
     install_recordflux
+
+    bundle_codelldb
 
     relocate_macho
 
