@@ -37,7 +37,7 @@
     "program": "$ZED_WORKTREE_ROOT/$ZED_STEM",
     "request": "launch",
     "cwd": "$ZED_WORKTREE_ROOT",
-    "preLaunchTask": "gprbuild",
+    "build": "gprbuild",
     "sourceLanguages": ["ada", "c", "cpp"],
   },
   {
@@ -49,7 +49,7 @@
     "request": "launch",
     "cwd": "$ZED_WORKTREE_ROOT",
     "stopOnEntry": false,
-    "preLaunchTask": "gprbuild",
+    "build": "gprbuild",
   },
   {
     "label": "Attach to running Ada process (gdb)",
