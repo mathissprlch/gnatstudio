@@ -40,6 +40,19 @@ for p in "$PATCHES_DIR"/*.patch; do
 done
 shopt -u nullglob
 
+# Sanity gate: the Ada type-system patch MUST be in the tree, or the resulting
+# liblldb is useless (Ada locals won't resolve and LLDB warns "no plugin for the
+# language"). Guards against a half-applied patch or a stale build silently
+# shipping an unpatched dylib. Expect eLanguageTypeAda95 twice: once in
+# TypeSystemClangSupportsLanguage and once in GetSupportedLanguagesForTypes.
+ts="$SRC/lldb/source/Plugins/TypeSystem/Clang/TypeSystemClang.cpp"
+n=$(grep -c "eLanguageTypeAda95" "$ts" || true)
+echo ">> patch sanity: eLanguageTypeAda95 in TypeSystemClang.cpp = $n (need >= 2)"
+if [ "${n:-0}" -lt 2 ]; then
+  echo "ERROR: Ada type-system patch not fully applied to $ts; aborting." >&2
+  exit 1
+fi
+
 # 3. Configure + build liblldb. PYTHON defaults ON (needs swig) for a usable
 #    codelldb; set LLDB_ENABLE_PYTHON=OFF for a quick compile-check.
 # CMAKE_ARGS lets callers inject extra flags, e.g. a ccache launcher in CI:
