@@ -4,17 +4,19 @@
 # into the .app's Resources/tools/.
 #
 # Strategy: lean on Alire (`alr install --prefix=...`) for the Ada side
-# of the world. RecordFlux is a Python package, so it goes into a
-# vendored venv. Anything Alire can't provide (e.g. `gnatprove` on
-# platforms where the FSF SPARK crate is unavailable) is left out --
-# the launcher just won't find it and the user can install it manually.
+# of the world. RecordFlux has no macOS wheel and a heavy from-source
+# build, so `rflx` is staged as a Docker-backed shim (see docker/) that
+# runs RecordFlux in a Linux container; a bundled python3 is kept for the
+# stdlib-only LSP servers. Anything Alire can't provide (e.g. `gnatprove`
+# where the FSF SPARK crate is unavailable) is left out -- the launcher
+# just won't find it and the user can install it manually.
 #
 # Outputs:
 #   $TOOLCHAIN_DIR/bin     gnat, gprbuild, ada_language_server, gnatprove,
 #                          rflx, gdb (if available), python3
 #   $TOOLCHAIN_DIR/lib     shared libs + GNAT runtime
-#   $TOOLCHAIN_DIR/share   runtime files
-#   $TOOLCHAIN_DIR/python  vendored RecordFlux venv
+#   $TOOLCHAIN_DIR/share   runtime files (+ recordflux/ Dockerfile & shim data)
+#   $TOOLCHAIN_DIR/python  vendored python3 (for the LSP servers)
 #
 # The script is idempotent and prints what it skipped.
 set -euo pipefail
@@ -83,30 +85,91 @@ select_default_toolchain() {
 # ---------------------------------------------------------------------------
 
 install_recordflux() {
+    # A bundled python3 for the stdlib-only LSP servers (proof + RecordFlux).
     local py
     py="$(command -v python3.12 || command -v python3.11 || command -v python3 || true)"
-    if [[ -z "${py}" ]]; then
-        warn "no python3 found; skipping RecordFlux"
-        return 0
-    fi
-
-    if [[ ! -x "${TOOLCHAIN_DIR}/python/bin/pip" ]]; then
-        log "creating Python venv at ${TOOLCHAIN_DIR}/python"
-        "${py}" -m venv "${TOOLCHAIN_DIR}/python"
-    fi
-
-    "${TOOLCHAIN_DIR}/python/bin/pip" install --quiet --upgrade pip wheel
-    if ! "${TOOLCHAIN_DIR}/python/bin/pip" install --quiet "RecordFlux>=0.25"; then
-        warn "pip install RecordFlux failed; the bundle will be missing rflx"
-        return 0
-    fi
-
-    if [[ -f "${TOOLCHAIN_DIR}/python/bin/rflx" ]]; then
-        ln -sf "${TOOLCHAIN_DIR}/python/bin/rflx" "${TOOLCHAIN_DIR}/bin/rflx"
+    if [[ -n "${py}" && ! -x "${TOOLCHAIN_DIR}/python/bin/python3" ]]; then
+        log "creating Python venv at ${TOOLCHAIN_DIR}/python (for the LSP servers)"
+        "${py}" -m venv "${TOOLCHAIN_DIR}/python" \
+            || warn "venv creation failed; LSP servers will need a system python3"
     fi
     if [[ -f "${TOOLCHAIN_DIR}/python/bin/python3" ]]; then
-        ln -sf "${TOOLCHAIN_DIR}/python/bin/python3" "${TOOLCHAIN_DIR}/bin/python3"
+        ln -sf "../python/bin/python3" "${TOOLCHAIN_DIR}/bin/python3"
     fi
+
+    # rflx itself: RecordFlux ships no macOS/arm64 wheel and a from-source build
+    # needs a full GNAT+GNATColl+GMP toolchain, so run it in a Linux container.
+    # Stage the vendored Dockerfile and an `rflx` shim that builds the image on
+    # first use (Docker assumed present on the host). The shim is a drop-in for
+    # the `rflx` the LSP invokes.
+    local dockerfile_src share_dir
+    dockerfile_src="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/docker/recordflux.Dockerfile"
+    share_dir="${TOOLCHAIN_DIR}/share/recordflux"
+    if [[ ! -f "${dockerfile_src}" ]]; then
+        warn "recordflux.Dockerfile not found at ${dockerfile_src}; rflx unavailable"
+        return 0
+    fi
+    mkdir -p "${share_dir}"
+    cp "${dockerfile_src}" "${share_dir}/recordflux.Dockerfile"
+
+    cat > "${TOOLCHAIN_DIR}/bin/rflx" <<'RFLX'
+#!/usr/bin/env bash
+# Docker-backed RecordFlux CLI (rflx).
+#
+# RecordFlux has no macOS wheel, so Zed GNAT runs it in a Linux container. The
+# image is resolved in this order, so the same shim works whether or not a
+# prebuilt image was vendored into the bundle:
+#   1. already present in Docker        -> use it
+#   2. vendored image tarball alongside -> docker load it (no build)
+#   3. otherwise                        -> docker build from the Dockerfile
+# Docker is assumed installed on the host. Drop-in for the rflx the LSP calls:
+# the current directory is bind-mounted at the same path so file arguments and
+# the generate output directory resolve identically inside the container.
+set -euo pipefail
+
+here="$(cd "$(dirname "$0")" && pwd)"
+share="$(cd "${here}/../share/recordflux" 2>/dev/null && pwd || true)"
+
+if ! command -v docker >/dev/null 2>&1; then
+  cat >&2 <<'MSG'
+rflx: Docker is required to run RecordFlux on this platform (RecordFlux ships no
+      macOS wheel). Install Docker Desktop, OrbStack, or colima, make sure
+      `docker` is on PATH, and retry.
+MSG
+  exit 127
+fi
+
+if [ -z "${share}" ]; then
+  echo "rflx: vendored RecordFlux assets not found next to this shim" >&2
+  exit 1
+fi
+
+version="$(sed -n 's/^ARG RECORDFLUX_VERSION=//p' "${share}/recordflux.Dockerfile" 2>/dev/null | head -n1)"
+image="zed-gnat/recordflux:${version:-latest}"
+
+if ! docker image inspect "${image}" >/dev/null 2>&1; then
+  if [ -f "${share}/recordflux-image.tar.gz" ]; then
+    echo "rflx: loading bundled RecordFlux image (first run only)..." >&2
+    gunzip -c "${share}/recordflux-image.tar.gz" | docker load >&2
+  elif [ -f "${share}/recordflux.Dockerfile" ]; then
+    echo "rflx: building ${image} from the vendored Dockerfile (first run; this takes a while)..." >&2
+    docker build -q -t "${image}" -f "${share}/recordflux.Dockerfile" "${share}" >&2
+  else
+    echo "rflx: no bundled image tarball or Dockerfile found in ${share}" >&2
+    exit 1
+  fi
+fi
+
+workdir="$(pwd)"
+exec docker run --rm \
+  --user "$(id -u):$(id -g)" \
+  --env HOME=/tmp \
+  --volume "${workdir}:${workdir}" \
+  --workdir "${workdir}" \
+  "${image}" "$@"
+RFLX
+    chmod +x "${TOOLCHAIN_DIR}/bin/rflx"
+    log "staged Docker-backed rflx (vendored image if present, else built on first use)"
 }
 
 # Bundle the codelldb DAP adapter so the GNAT/codelldb debug scenarios can
