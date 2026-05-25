@@ -45,7 +45,21 @@ echo "${RELEASE_CHANNEL}" > "${ZED}/crates/zed/RELEASE_CHANNEL"
 
 pushd "${ZED}" >/dev/null
     # Zed's own bundler will install cargo-bundle if missing.
-    ./script/bundle-mac "${TARGET_TRIPLE}"
+    #
+    # Its final step packages a .dmg (hdiutil create) and runs a slow global
+    # `npm install dmg-license`. We discard that DMG: the .app is moved back out
+    # below and gets the GNAT toolchain injected, so a distribution DMG would
+    # have to be rebuilt after injection anyway. The .app is fully built and
+    # signed *before* the DMG step, and hdiutil is flaky on hosted runners
+    # ("hdiutil: create failed - Resource busy"), so a DMG-stage failure must not
+    # fail our build. Tolerate a non-zero exit here and let the .app-existence
+    # check below tell a harmless DMG flake (.app present) apart from a real
+    # build failure (no .app -> we still exit non-zero).
+    bundle_status=0
+    ./script/bundle-mac "${TARGET_TRIPLE}" || bundle_status=$?
+    if [[ "${bundle_status}" -ne 0 ]]; then
+        echo "upstream bundle-mac exited ${bundle_status}; checking for the .app before treating it as a (discarded) DMG-stage flake" >&2
+    fi
 popd >/dev/null
 
 APP_NAME="Zed GNAT"
