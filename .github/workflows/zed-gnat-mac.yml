@@ -6,10 +6,11 @@ name: Build Zed GNAT (macOS)
 # codelldb-ada artifact, and injects it before `make app` bundles the toolchain.
 
 on:
+  # Branch builds run via the pull_request event below (one build per push to a
+  # PR). push is master-only so a commit with an open PR doesn't build twice.
   push:
     branches:
       - master
-      - 'claude/**'
     paths:
       - 'zed-fork/**'
       - '.github/workflows/zed-gnat-mac.yml'
