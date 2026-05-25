@@ -192,6 +192,13 @@ jobs:
       BUILD_LOG: ${{ github.workspace }}/zed-fork/build/build.log
       # Patched codelldb (downloaded below) -> provision-toolchain.sh bundles it.
       CODELLDB_DIST: ${{ github.workspace }}/zed-fork/build/codelldb-ada/codelldb-ada-aarch64.vsix
+      # sccache caches rustc invocations in the GitHub Actions cache so Zed's
+      # large Rust compile is reused across runs. (zed/target is far bigger than
+      # the ~10 GB cache cap, so caching it never worked; object-level caching
+      # fits.) CARGO_INCREMENTAL=0 is required for sccache to cache.
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: "sccache"
+      CARGO_INCREMENTAL: "0"
 
     steps:
       - name: Checkout fork
@@ -215,19 +222,21 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      - name: Set up sccache
+        uses: mozilla-actions/sccache-action@v0.0.6
+
       - name: Cache cargo
         uses: actions/cache@v4
         with:
+          # Only dependency sources. The compiled artifacts (zed/target) are far
+          # larger than GitHub's ~10 GB cache cap, so caching them silently
+          # failed and forced a full recompile every run; sccache caches rustc
+          # output at the object level instead, which fits and is reused.
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            zed-fork/zed/target
-          key: zed-cargo-${{ matrix.target }}-${{ hashFiles('zed-fork/zed/Cargo.lock', 'zed-fork/scripts/patch-cxx-iterator.sh') }}
+          key: zed-cargo-${{ matrix.target }}-${{ hashFiles('zed-fork/zed/Cargo.lock') }}
           restore-keys: zed-cargo-${{ matrix.target }}-
-          # Save even on failed builds: webrtc-sys and most Rust crates compile
-          # for ~60 min and the failures we've hit have all been in trailing
-          # wrapper steps, so leaving the compilation cache primed makes the
-          # next attempt 10x faster.
           save-always: true
 
       - name: Cache toolchain
@@ -271,6 +280,10 @@ jobs:
           mkdir -p build
           set -o pipefail
           make app 2>&1 | tee -a "$BUILD_LOG"
+
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats || true
 
       - name: Surface build failure
         if: failure() && steps.build_app.conclusion == 'failure'
