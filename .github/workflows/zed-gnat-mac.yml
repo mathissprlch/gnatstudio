@@ -197,8 +197,10 @@ jobs:
       # large Rust compile is reused across runs. (zed/target is far bigger than
       # the ~10 GB cache cap, so caching it never worked; object-level caching
       # fits.) CARGO_INCREMENTAL=0 is required for sccache to cache.
-      SCCACHE_GHA_ENABLED: "true"
-      RUSTC_WRAPPER: "sccache"
+      # RUSTC_WRAPPER/SCCACHE_GHA_ENABLED are exported by the probe step below,
+      # and only when the GHA cache backend is actually reachable: during a
+      # cache-service outage sccache's server fails to start, which would
+      # otherwise make even `cargo fetch` (it runs `rustc -vV`) a hard error.
       CARGO_INCREMENTAL: "0"
 
     steps:
@@ -225,6 +227,25 @@ jobs:
 
       - name: Set up sccache
         uses: mozilla-actions/sccache-action@v0.0.6
+
+      - name: Enable sccache only if its cache backend is reachable
+        env:
+          SCCACHE_GHA_ENABLED: "true"
+        run: |
+          # A GHA cache-service outage makes sccache's server fail to start, and
+          # with RUSTC_WRAPPER=sccache that turns even `cargo fetch` (which calls
+          # `rustc -vV`) into a hard error that kills the build. Probe the backend
+          # first; only wire sccache in when it actually works.
+          set +e
+          sccache --start-server 2> /tmp/sccache-start.log
+          if [ $? -eq 0 ]; then
+            echo "sccache backend reachable -> enabling rustc wrapper"
+            echo "RUSTC_WRAPPER=sccache"   >> "$GITHUB_ENV"
+            echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
+          else
+            echo "::warning::sccache cache backend unavailable; building without sccache this run"
+            cat /tmp/sccache-start.log || true
+          fi
 
       - name: Cache cargo
         uses: actions/cache@v4
