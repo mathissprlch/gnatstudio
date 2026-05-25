@@ -50,6 +50,18 @@ as a typedef of its base type; subtypes now render with values (e.g.
 `(natural) len = 10`). Showing an unconstrained array's *content* (fat pointer →
 string/slice) still needs the AdaLanguage formatter.
 
+## `lldb-ada-fixed-point.patch` (M2)
+
+GNAT with `-fgnat-encodings=minimal` emits ordinary and decimal fixed-point types
+as `DW_TAG_base_type` with `DW_ATE_signed_fixed`/`DW_ATE_unsigned_fixed` plus
+`DW_AT_binary_scale` (power of two) or `DW_AT_decimal_scale` (power of ten). LLDB's
+Clang type system has no fixed-point type, so these encodings hit the `default:`
+arm of `GetBuiltinTypeForDWARFEncodingAndBitSize` and produced an invalid type —
+the variable did not render at all. This resolves them to the underlying integer
+of the same size, so the value renders (as its raw stored integer); a follow-up
+`AdaLanguage` formatter reads the scale and prints the real (scaled) value. These
+are standard DWARF encodings, so resolving them is safe for non-Ada units too.
+
 ## `lldb-ada-language-plugin.patch` (M1/M2)
 
 A dedicated `AdaLanguage` plugin registered for `DW_LANG_Ada*`, plus its first
