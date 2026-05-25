@@ -20,6 +20,15 @@ Type-system plugins are compiled into `liblldb`; they cannot be loaded at
 runtime. So using this patch means **building a custom `liblldb` and
 repackaging codelldb around it**.
 
+## `lldb-ada-array-bounds.patch` (M1)
+
+GNAT emits array subranges with only `DW_AT_upper_bound`; the default lower
+bound is language-defined (1 for Ada, 0 for C). `DWARFASTParser` assumed 0, so
+`array (1 .. 3)` rendered with a junk 4th element. This defaults the lower bound
+to 1 for Ada compilation units (an explicit `DW_AT_lower_bound` still
+overrides). Touches the shared `DWARFASTParser.cpp`, gated on the Ada language,
+so it is independent of the M0 patch and applies on top.
+
 ### Building
 
 `scripts/build-lldb-ada.sh` clones the pinned LLVM commit, applies every patch
