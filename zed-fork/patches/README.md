@@ -39,6 +39,17 @@ alternatives were dropped and a record showed only its fixed fields. Adds
 renders with the correct value (e.g. `g_val = 2.5`). All alternatives are shown
 for now; hiding the inactive ones needs a discriminant-aware formatter (later).
 
+## `lldb-ada-subrange-types.patch` (M2)
+
+GNAT emits Ada subtypes (`Natural`, `Positive`, user integer ranges) and the
+bound members of unconstrained-array fat pointers as standalone
+`DW_TAG_subrange_type` DIEs used directly as a variable's type. LLDB only
+handled subranges inside arrays, so a standalone one errored ("unhandled type
+tag") and spilled into the Variables pane. Route it through `ParseTypeModifier`
+as a typedef of its base type; subtypes now render with values (e.g.
+`(natural) len = 10`). Showing an unconstrained array's *content* (fat pointer →
+string/slice) still needs the AdaLanguage formatter.
+
 ### Building
 
 `scripts/build-lldb-ada.sh` clones the pinned LLVM commit, applies every patch
