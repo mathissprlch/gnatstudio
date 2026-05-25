@@ -1,0 +1,286 @@
+# Dedicated TypeSystemAda plugin (a TypeSystemClang subclass).
+#
+# Routes DW_LANG_Ada* compile units to a TypeSystemAda that reuses
+# TypeSystemClang's machinery but gives Ada values a native identity:
+# GetMinimumLanguage() reports eLanguageTypeAda95, so values flow through the
+# AdaLanguage data formatters directly (no C/C++ bridge). It also renders GNAT's
+# mangled names with Ada syntax (pkg__type -> Pkg.Type) for display. Foundation
+# for Ada-native behavior the Clang type model cannot represent (variant active
+# member, true array bounds, fixed-point, tagged dispatch).
+diff --git a/lldb/source/Plugins/TypeSystem/Ada/CMakeLists.txt b/lldb/source/Plugins/TypeSystem/Ada/CMakeLists.txt
+new file mode 100644
+index 000000000..0e2572e98
+--- /dev/null
++++ b/lldb/source/Plugins/TypeSystem/Ada/CMakeLists.txt
+@@ -0,0 +1,17 @@
++add_lldb_library(lldbPluginTypeSystemAda PLUGIN
++  TypeSystemAda.cpp
++
++  LINK_LIBS
++    lldbCore
++    lldbSymbol
++    lldbTarget
++    lldbUtility
++    lldbPluginTypeSystemClang
++  CLANG_LIBS
++    clangAST
++    clangBasic
++    clangFrontend
++    clangSema
++  LINK_COMPONENTS
++    Support
++  )
+diff --git a/lldb/source/Plugins/TypeSystem/Ada/TypeSystemAda.cpp b/lldb/source/Plugins/TypeSystem/Ada/TypeSystemAda.cpp
+new file mode 100644
+index 000000000..6a3c8e15b
+--- /dev/null
++++ b/lldb/source/Plugins/TypeSystem/Ada/TypeSystemAda.cpp
+@@ -0,0 +1,162 @@
++//===-- TypeSystemAda.cpp -------------------------------------------------===//
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++
++#include "TypeSystemAda.h"
++
++#include "lldb/Core/Module.h"
++#include "lldb/Core/PluginManager.h"
++#include "lldb/Target/Target.h"
++#include "lldb/Utility/ArchSpec.h"
++#include "lldb/Utility/ConstString.h"
++#include "llvm/ADT/STLExtras.h"
++#include "llvm/ADT/StringExtras.h"
++#include "llvm/ADT/StringRef.h"
++
++#include <string>
++
++using namespace lldb;
++using namespace lldb_private;
++
++LLDB_PLUGIN_DEFINE(TypeSystemAda)
++
++char TypeSystemAda::ID = 0;
++
++static bool IsAdaLanguage(lldb::LanguageType language) {
++  switch (language) {
++  case eLanguageTypeAda83:
++  case eLanguageTypeAda95:
++  case eLanguageTypeAda2005:
++  case eLanguageTypeAda2012:
++    return true;
++  default:
++    return false;
++  }
++}
++
++lldb::TypeSystemSP TypeSystemAda::CreateInstance(lldb::LanguageType language,
++                                                 Module *module,
++                                                 Target *target) {
++  if (!IsAdaLanguage(language))
++    return lldb::TypeSystemSP();
++
++  ArchSpec arch;
++  if (module)
++    arch = module->GetArchitecture();
++  else if (target)
++    arch = target->GetArchitecture();
++
++  if (!arch.IsValid())
++    return lldb::TypeSystemSP();
++
++  llvm::Triple triple = arch.GetTriple();
++  // LLVM wants this to be set to iOS or MacOSX; if we're working on a
++  // bare-boards type image, change the triple for llvm's benefit (mirrors
++  // TypeSystemClang::CreateInstance).
++  if (triple.getVendor() == llvm::Triple::Apple &&
++      triple.getOS() == llvm::Triple::UnknownOS) {
++    if (triple.getArch() == llvm::Triple::arm ||
++        triple.getArch() == llvm::Triple::aarch64 ||
++        triple.getArch() == llvm::Triple::aarch64_32 ||
++        triple.getArch() == llvm::Triple::thumb) {
++      triple.setOS(llvm::Triple::IOS);
++    } else {
++      triple.setOS(llvm::Triple::MacOSX);
++    }
++  }
++
++  // Ada types are read from a module's DWARF. The target-scoped scratch type
++  // system exists for expression evaluation, which Ada does not support yet
++  // (see GetSupportedLanguagesForExpressions), so only the module case is
++  // handled here.
++  if (module) {
++    std::string ast_name =
++        "Ada ASTContext for '" + module->GetFileSpec().GetPath() + "'";
++    return std::make_shared<TypeSystemAda>(ast_name, triple);
++  }
++  return lldb::TypeSystemSP();
++}
++
++LanguageSet TypeSystemAda::GetSupportedLanguagesForTypes() {
++  LanguageSet languages;
++  languages.Insert(lldb::eLanguageTypeAda83);
++  languages.Insert(lldb::eLanguageTypeAda95);
++  languages.Insert(lldb::eLanguageTypeAda2005);
++  languages.Insert(lldb::eLanguageTypeAda2012);
++  return languages;
++}
++
++LanguageSet TypeSystemAda::GetSupportedLanguagesForExpressions() {
++  // Ada expression evaluation is not supported yet.
++  return LanguageSet();
++}
++
++void TypeSystemAda::Initialize() {
++  PluginManager::RegisterPlugin(
++      GetPluginNameStatic(), "Ada type system", CreateInstance,
++      GetSupportedLanguagesForTypes(), GetSupportedLanguagesForExpressions());
++}
++
++void TypeSystemAda::Terminate() {
++  PluginManager::UnregisterPlugin(CreateInstance);
++}
++
++lldb::LanguageType
++TypeSystemAda::GetMinimumLanguage(lldb::opaque_compiler_type_t type) {
++  return lldb::eLanguageTypeAda95;
++}
++
++// GNAT mangles Ada names with "__" as the package separator (e.g.
++// "shapes__color") and lowercases everything. For each identifier token that
++// looks like such a mangled name, render the "." separator and Ada's
++// Mixed_Case ("Shapes.Color"); leave everything else (C/Clang qualifiers like
++// "const", punctuation such as '*'/'&'/'[]') untouched, so a qualified type
++// like "const shapes__shape" becomes "const Shapes.Shape".
++static ConstString AdaifyTypeName(ConstString clang_name) {
++  llvm::StringRef name = clang_name.GetStringRef();
++  if (!name.contains("__"))
++    return clang_name;
++
++  auto is_ident = [](char c) { return llvm::isAlnum(c) || c == '_'; };
++
++  std::string out;
++  out.reserve(name.size());
++  for (size_t i = 0, n = name.size(); i < n;) {
++    if (!is_ident(name[i])) {
++      out.push_back(name[i++]);
++      continue;
++    }
++    size_t start = i;
++    while (i < n && is_ident(name[i]))
++      ++i;
++    llvm::StringRef tok = name.substr(start, i - start);
++    if (!tok.contains("__")) {
++      out += tok; // not a mangled Ada name (e.g. "const", "char")
++      continue;
++    }
++    bool at_word_start = true;
++    for (size_t k = 0, m = tok.size(); k < m; ++k) {
++      if (tok[k] == '_' && k + 1 < m && tok[k + 1] == '_') {
++        out.push_back('.');
++        at_word_start = true;
++        ++k; // consume the second '_'
++        continue;
++      }
++      char c = tok[k];
++      if (at_word_start && llvm::isAlpha(c))
++        c = llvm::toUpper(c);
++      out.push_back(c);
++      at_word_start = (tok[k] == '_');
++    }
++  }
++  return ConstString(out);
++}
++
++ConstString
++TypeSystemAda::GetDisplayTypeName(lldb::opaque_compiler_type_t type) {
++  return AdaifyTypeName(TypeSystemClang::GetDisplayTypeName(type));
++}
+diff --git a/lldb/source/Plugins/TypeSystem/Ada/TypeSystemAda.h b/lldb/source/Plugins/TypeSystem/Ada/TypeSystemAda.h
+new file mode 100644
+index 000000000..baa97f8b0
+--- /dev/null
++++ b/lldb/source/Plugins/TypeSystem/Ada/TypeSystemAda.h
+@@ -0,0 +1,73 @@
++//===-- TypeSystemAda.h ---------------------------------------------------===//
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++
++#ifndef LLDB_SOURCE_PLUGINS_TYPESYSTEM_ADA_TYPESYSTEMADA_H
++#define LLDB_SOURCE_PLUGINS_TYPESYSTEM_ADA_TYPESYSTEMADA_H
++
++#include "Plugins/TypeSystem/Clang/TypeSystemClang.h"
++
++namespace lldb_private {
++
++/// A type system for Ada.
++///
++/// GNAT emits standard DWARF whose core type model (scalars, records,
++/// constrained arrays, enumerations, access types) maps cleanly onto the Clang
++/// AST, so TypeSystemAda is built on top of TypeSystemClang and reuses its
++/// machinery. What it adds is a native Ada identity: GetMinimumLanguage()
++/// reports eLanguageTypeAda*, so values flow through the AdaLanguage data
++/// formatters directly rather than being bridged through the C/C++ formatter
++/// categories.
++///
++/// This is the foundation for Ada-native behavior that the Clang type model
++/// cannot represent (variant records, true array index bounds, tagged-type
++/// dynamic dispatch, fixed-point scaling).
++class TypeSystemAda : public TypeSystemClang {
++  // LLVM RTTI support
++  static char ID;
++
++public:
++  // LLVM casting support. A TypeSystemAda is also a TypeSystemClang, so it
++  // answers to both type IDs.
++  bool isA(const void *ClassID) const override {
++    return ClassID == &ID || TypeSystemClang::isA(ClassID);
++  }
++  static bool classof(const TypeSystem *ts) { return ts->isA(&ID); }
++
++  TypeSystemAda(llvm::StringRef name, llvm::Triple triple)
++      : TypeSystemClang(name, triple) {}
++
++  ~TypeSystemAda() override = default;
++
++  // PluginInterface functions
++  llvm::StringRef GetPluginName() override { return GetPluginNameStatic(); }
++
++  static llvm::StringRef GetPluginNameStatic() { return "ada"; }
++
++  static lldb::TypeSystemSP CreateInstance(lldb::LanguageType language,
++                                           Module *module, Target *target);
++
++  static LanguageSet GetSupportedLanguagesForTypes();
++  static LanguageSet GetSupportedLanguagesForExpressions();
++
++  static void Initialize();
++
++  static void Terminate();
++
++  /// Every type owned by this type system is an Ada type.
++  lldb::LanguageType
++  GetMinimumLanguage(lldb::opaque_compiler_type_t type) override;
++
++  /// Render GNAT's mangled names with Ada syntax (e.g. "pkg__type" as
++  /// "Pkg.Type") for display. Display-only; GetTypeName (used for lookups) is
++  /// left untouched.
++  ConstString GetDisplayTypeName(lldb::opaque_compiler_type_t type) override;
++};
++
++} // namespace lldb_private
++
++#endif // LLDB_SOURCE_PLUGINS_TYPESYSTEM_ADA_TYPESYSTEMADA_H
+diff --git a/lldb/source/Plugins/TypeSystem/CMakeLists.txt b/lldb/source/Plugins/TypeSystem/CMakeLists.txt
+index 17c40aee4..fc71552fe 100644
+--- a/lldb/source/Plugins/TypeSystem/CMakeLists.txt
++++ b/lldb/source/Plugins/TypeSystem/CMakeLists.txt
+@@ -1 +1,2 @@
++add_subdirectory(Ada)
+ add_subdirectory(Clang)

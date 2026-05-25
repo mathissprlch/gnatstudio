@@ -40,16 +40,23 @@ for p in "$PATCHES_DIR"/*.patch; do
 done
 shopt -u nullglob
 
-# Sanity gate: the Ada type-system patch MUST be in the tree, or the resulting
+# Sanity gate: the Ada type system MUST be in the tree, or the resulting
 # liblldb is useless (Ada locals won't resolve and LLDB warns "no plugin for the
 # language"). Guards against a half-applied patch or a stale build silently
-# shipping an unpatched dylib. Expect eLanguageTypeAda95 twice: once in
-# TypeSystemClangSupportsLanguage and once in GetSupportedLanguagesForTypes.
+# shipping an unpatched dylib. The dedicated TypeSystemAda plugin must exist and
+# register eLanguageTypeAda*, and TypeSystemClang must still accept Ada as the
+# base type system that TypeSystemAda subclasses.
+ada_ts="$SRC/lldb/source/Plugins/TypeSystem/Ada/TypeSystemAda.cpp"
 ts="$SRC/lldb/source/Plugins/TypeSystem/Clang/TypeSystemClang.cpp"
-n=$(grep -c "eLanguageTypeAda95" "$ts" || true)
-echo ">> patch sanity: eLanguageTypeAda95 in TypeSystemClang.cpp = $n (need >= 2)"
-if [ "${n:-0}" -lt 2 ]; then
-  echo "ERROR: Ada type-system patch not fully applied to $ts; aborting." >&2
+if [ ! -f "$ada_ts" ]; then
+  echo "ERROR: TypeSystemAda plugin missing ($ada_ts); Ada patches not applied; aborting." >&2
+  exit 1
+fi
+n_ada=$(grep -c "eLanguageTypeAda95" "$ada_ts" || true)
+n_clang=$(grep -c "eLanguageTypeAda95" "$ts" || true)
+echo ">> patch sanity: eLanguageTypeAda95 in TypeSystemAda.cpp = $n_ada, TypeSystemClang.cpp = $n_clang"
+if [ "${n_ada:-0}" -lt 1 ] || [ "${n_clang:-0}" -lt 1 ]; then
+  echo "ERROR: Ada type-system patches not fully applied; aborting." >&2
   exit 1
 fi
 

@@ -1,29 +1,20 @@
-# M1/M2: AdaLanguage plugin + unconstrained-String data formatter.
+# AdaLanguage plugin + Ada String data formatters.
 #
-# Adds a dedicated lldb_private::Language plugin for Ada (registered for
-# DW_LANG_Ada83/95/2005/2012) together with its first data formatter: a
-# hardcoded summary that renders a GNAT unconstrained array of characters
-# (String) as its text content.
-#
-# GNAT lays out an unconstrained array as a "fat pointer" record with two
-# members -- P_ARRAY (a pointer to the element data) and P_BOUNDS (a pointer to
-# a {LB0, UB0} bounds record). The summary matches that shape, restricted to
-# single-byte character elements so non-character unconstrained arrays fall
-# through to the default rendering, reads the exact LB0..UB0 byte range, and
-# prints it as a quoted string. A String parameter that previously showed only
-# { P_ARRAY=.. P_BOUNDS=.. } now renders as e.g. "Hello, Ada".
-#
-# Auto-registers via the PLUGIN cmake keyword + LLDB_PLUGIN_DEFINE, so no
-# SystemInitializer edit is needed. NOTE: under M0 (Ada routed through
-# TypeSystemClang) an Ada value reports its language as C/C++, so the companion
-# lldb-ada-formatter-routing.patch is required for this summary to actually be
-# consulted. Verified against release/19.x: builds and renders correctly.
+# A dedicated lldb_private::Language plugin for Ada (DW_LANG_Ada83/95/2005/2012)
+# with two hardcoded summaries that render GNAT strings as quoted text:
+#   * unconstrained String -- the fat-pointer record {P_ARRAY, P_BOUNDS},
+#     reading the LB0..UB0 byte range;
+#   * constrained String -- a fixed-length array of Character stored inline.
+# Both restrict to single-byte character elements so non-character arrays fall
+# through to default rendering. Auto-registers via the PLUGIN cmake keyword +
+# LLDB_PLUGIN_DEFINE. With TypeSystemAda reporting eLanguageTypeAda* natively,
+# these summaries are consulted through the normal Ada formatter path.
 diff --git a/lldb/source/Plugins/Language/Ada/AdaLanguage.cpp b/lldb/source/Plugins/Language/Ada/AdaLanguage.cpp
 new file mode 100644
-index 000000000..4d594befc
+index 000000000..fe0323bf0
 --- /dev/null
 +++ b/lldb/source/Plugins/Language/Ada/AdaLanguage.cpp
-@@ -0,0 +1,160 @@
+@@ -0,0 +1,219 @@
 +//===-- AdaLanguage.cpp ---------------------------------------------------===//
 +//
 +// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
@@ -160,6 +151,52 @@ index 000000000..4d594befc
 +      StringPrinter::StringElementType::ASCII>(sopts);
 +}
 +
++// A constrained Ada String is a fixed-length array of Character stored inline
++// (no fat pointer), e.g. `Name : String := "Ada"`. Match an array of
++// single-byte character elements so it renders as a quoted string; arrays of
++// any other element type fall through to the default element-by-element
++// rendering unchanged.
++bool IsAdaCharArray(ValueObject &valobj) {
++  CompilerType element;
++  return valobj.GetCompilerType().IsArrayType(&element) && element.IsCharType();
++}
++
++bool AdaCharArraySummaryProvider(ValueObject &valobj, Stream &stream,
++                                 const TypeSummaryOptions &options) {
++  if (!IsAdaCharArray(valobj))
++    return false;
++
++  DataExtractor data;
++  Status error;
++  valobj.GetData(data, error);
++  if (error.Fail())
++    return false;
++
++  uint64_t length = data.GetByteSize();
++  TargetSP target_sp = valobj.GetTargetSP();
++  if (!target_sp)
++    return false;
++
++  bool uncapped =
++      options.GetCapping() == TypeSummaryCapping::eTypeSummaryUncapped;
++  bool truncated = false;
++  uint64_t max_size = target_sp->GetMaximumSizeOfStringSummary();
++  if (!uncapped && length > max_size) {
++    length = max_size;
++    truncated = true;
++  }
++
++  StringPrinter::ReadBufferAndDumpToStreamOptions sopts(valobj);
++  sopts.SetData(DataExtractor(data, 0, length));
++  sopts.SetStream(&stream);
++  sopts.SetQuote('"');
++  sopts.SetSourceSize(static_cast<uint32_t>(length));
++  sopts.SetBinaryZeroIsTerminator(false);
++  sopts.SetIsTruncated(truncated);
++  return StringPrinter::ReadBufferAndDumpToStream<
++      StringPrinter::StringElementType::ASCII>(sopts);
++}
++
 +} // namespace
 +
 +HardcodedFormatters::HardcodedSummaryFinder
@@ -177,6 +214,19 @@ index 000000000..4d594befc
 +                      true),
 +                  AdaStringSummaryProvider, "Ada string summary provider"));
 +          if (IsAdaStringFatPointer(valobj))
++            return formatter_sp;
++          return nullptr;
++        });
++    g_formatters.push_back(
++        [](ValueObject &valobj, lldb::DynamicValueType,
++           FormatManager &) -> TypeSummaryImpl::SharedPointer {
++          static CXXFunctionSummaryFormat::SharedPointer formatter_sp(
++              new CXXFunctionSummaryFormat(
++                  TypeSummaryImpl::Flags().SetCascades(true).SetDontShowChildren(
++                      true),
++                  AdaCharArraySummaryProvider,
++                  "Ada character array summary provider"));
++          if (IsAdaCharArray(valobj))
 +            return formatter_sp;
 +          return nullptr;
 +        });
