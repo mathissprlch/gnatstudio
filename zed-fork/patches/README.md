@@ -50,15 +50,32 @@ as a typedef of its base type; subtypes now render with values (e.g.
 `(natural) len = 10`). Showing an unconstrained array's *content* (fat pointer →
 string/slice) still needs the AdaLanguage formatter.
 
-## `lldb-ada-language-plugin.patch` (M1/M2 foundation)
+## `lldb-ada-language-plugin.patch` (M1/M2)
 
-A dedicated `AdaLanguage` plugin registered for `DW_LANG_Ada*`. On its own it
-only registers the language (source-file detection, entry point, identity) with
-no rendering change — it's the foundation the Ada data formatters hang off
-(follow-ups: hide inactive variant alternatives via the discriminant, present
-GNAT unconstrained-array fat pointers as their string/slice content, Ada-style
-names, 1-based indices). Auto-registers via the PLUGIN cmake keyword +
-`LLDB_PLUGIN_DEFINE`, so no SystemInitializer edit is needed.
+A dedicated `AdaLanguage` plugin registered for `DW_LANG_Ada*`, plus its first
+data formatter. It registers the language (source-file detection, entry point,
+identity) and adds a hardcoded summary that renders a GNAT unconstrained array
+of characters (`String`) as its text. GNAT lays an unconstrained array out as a
+*fat pointer* record — `P_ARRAY` (pointer to the data) + `P_BOUNDS` (pointer to
+an `{LB0, UB0}` bounds record). The summary matches that shape (restricted to
+1-byte character elements, so non-character arrays are left alone), reads the
+exact `LB0..UB0` byte range, and prints it quoted: a `String` that used to show
+`{ P_ARRAY=.. P_BOUNDS=.. }` now renders as e.g. `"Hello, Ada"` (children
+hidden). Auto-registers via the PLUGIN cmake keyword + `LLDB_PLUGIN_DEFINE`, so
+no SystemInitializer edit is needed. Requires
+`lldb-ada-formatter-routing.patch` to be consulted under M0. Remaining
+follow-ups: hide inactive variant alternatives via the discriminant, Ada-style
+names, 1-based indices.
+
+## `lldb-ada-formatter-routing.patch` (M0 bridge)
+
+Under M0, Ada types are rendered through `TypeSystemClang`, so a value reports
+its language as C/C++ and `FormatManager` only consults the C++/ObjC categories
+— never Ada, so the plugin's summaries above would never fire. This adds
+`eLanguageTypeAda95` to the candidate-language list for C/C++ values. The Ada
+matchers key off GNAT's `P_ARRAY`+`P_BOUNDS` shape, so genuine C/C++ values are
+unaffected. **Temporary**: delete once a dedicated `TypeSystemAda` reports
+`eLanguageTypeAda*` directly.
 
 ### Building
 
