@@ -29,6 +29,16 @@ to 1 for Ada compilation units (an explicit `DW_AT_lower_bound` still
 overrides). Touches the shared `DWARFASTParser.cpp`, gated on the Ada language,
 so it is independent of the M0 patch and applies on top.
 
+## `lldb-ada-variant-records.patch` (M2)
+
+GNAT emits Ada discriminated records using the standard `DW_TAG_variant_part`,
+which `DWARFASTParserClang` only consumed for Rust enums — so the `case`
+alternatives were dropped and a record showed only its fixed fields. Adds
+`ParseAdaVariantPart` to flatten each alternative's member onto the record
+(union-like overlap via LLDB's explicit layout). The active alternative now
+renders with the correct value (e.g. `g_val = 2.5`). All alternatives are shown
+for now; hiding the inactive ones needs a discriminant-aware formatter (later).
+
 ### Building
 
 `scripts/build-lldb-ada.sh` clones the pinned LLVM commit, applies every patch
