@@ -73,8 +73,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/ccache
-          key: lldb-ada-ccache-${{ runner.arch }}-${{ hashFiles('zed-fork/patches/*.patch') }}
-          restore-keys: lldb-ada-ccache-${{ runner.arch }}-
+          key: lldb-ada-ccache-v2-${{ runner.arch }}-${{ hashFiles('zed-fork/patches/*.patch') }}
+          restore-keys: lldb-ada-ccache-v2-${{ runner.arch }}-
           save-always: true
 
       # One traced step so disk/brew/cmake/ninja all land in BUILD_LOG and the
