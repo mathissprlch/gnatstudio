@@ -50,6 +50,16 @@ as a typedef of its base type; subtypes now render with values (e.g.
 `(natural) len = 10`). Showing an unconstrained array's *content* (fat pointer →
 string/slice) still needs the AdaLanguage formatter.
 
+## `lldb-ada-language-plugin.patch` (M1/M2 foundation)
+
+A dedicated `AdaLanguage` plugin registered for `DW_LANG_Ada*`. On its own it
+only registers the language (source-file detection, entry point, identity) with
+no rendering change — it's the foundation the Ada data formatters hang off
+(follow-ups: hide inactive variant alternatives via the discriminant, present
+GNAT unconstrained-array fat pointers as their string/slice content, Ada-style
+names, 1-based indices). Auto-registers via the PLUGIN cmake keyword +
+`LLDB_PLUGIN_DEFINE`, so no SystemInitializer edit is needed.
+
 ### Building
 
 `scripts/build-lldb-ada.sh` clones the pinned LLVM commit, applies every patch
