@@ -73,6 +73,26 @@ cmake -S "$SRC/llvm" -B "$BUILD" -G Ninja \
 
 ninja -C "$BUILD" -j"$JOBS" liblldb
 
+# Self-verify the built liblldb actually RESOLVES Ada types -- not just that the
+# patch is in the source. This is the exact failure we hit on macOS (source
+# patched, dylib silently not resolving). Build the lldb driver and statically
+# look up Ada's `integer` in a committed fixture object; no process is launched
+# so it works cross-arch (DWARF parsing is target-independent).
+if [ "${SELFTEST:-1}" = "1" ]; then
+  ninja -C "$BUILD" -j"$JOBS" lldb
+  FIXTURE="$(cd "$(dirname "${BASH_SOURCE[0]}")/../test" && pwd)/ada_min.o"
+  echo ">> self-test: image lookup -t integer on $FIXTURE"
+  probe="$("$BUILD/bin/lldb" -b -o "image lookup -t integer" -o quit "$FIXTURE" 2>&1 || true)"
+  echo "$probe"
+  if echo "$probe" | grep -q "byte-size"; then
+    echo ">> SELF-TEST PASS: liblldb resolves Ada types."
+  else
+    echo "ERROR: SELF-TEST FAILED -- built liblldb does NOT resolve Ada 'integer'." >&2
+    echo "       Broken dylib, or cross-arch fixture limitation; see probe output above." >&2
+    exit 1
+  fi
+fi
+
 echo ">> liblldb built: $BUILD/lib"
 echo ">> repackage codelldb against it, then point provision-toolchain.sh at"
 echo "   the result via \$CODELLDB_DIST."
