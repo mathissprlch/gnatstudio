@@ -1,0 +1,99 @@
+# M2: Ada discriminated/variant records.
+#
+# DWARFASTParserClang already understands DW_TAG_variant_part, but only for Rust
+# enums (ParseRustVariantPart, gated on eLanguageTypeRust). GNAT emits the same
+# standard DWARF for Ada discriminated records (DW_TAG_variant_part ->
+# DW_TAG_variant with DW_AT_discr_value -> DW_TAG_member), so the variant
+# members (the `case` alternatives) were silently dropped and a record showed
+# only its fixed fields.
+#
+# Add ParseAdaVariantPart, which flattens each alternative's member directly onto
+# the enclosing record at its DWARF offset (alternatives overlap union-like;
+# LLDB's explicit field layout permits it). Wire it into the DW_TAG_variant_part
+# case for Ada compilation units.
+#
+# Verified against release/19.x: a `Shape (Kind => Green, ...)` now renders the
+# active member, e.g. `g_val = 2.5`. (All alternatives are shown for now; only
+# the one selected by the discriminant is meaningful -- showing solely the
+# active alternative needs a discriminant-aware formatter, a later change.)
+diff --git a/lldb/source/Plugins/SymbolFile/DWARF/DWARFASTParserClang.cpp b/lldb/source/Plugins/SymbolFile/DWARF/DWARFASTParserClang.cpp
+index ac769ad9f..0beae3cd5 100644
+--- a/lldb/source/Plugins/SymbolFile/DWARF/DWARFASTParserClang.cpp
++++ b/lldb/source/Plugins/SymbolFile/DWARF/DWARFASTParserClang.cpp
+@@ -3083,12 +3083,19 @@ bool DWARFASTParserClang::ParseChildMembers(
+       ParseObjCProperty(die, parent_die, class_clang_type, delayed_properties);
+       break;
+
+-    case DW_TAG_variant_part:
+-      if (die.GetCU()->GetDWARFLanguageType() == eLanguageTypeRust) {
++    case DW_TAG_variant_part: {
++      const uint64_t cu_language = die.GetCU()->GetDWARFLanguageType();
++      if (cu_language == eLanguageTypeRust) {
+         ParseRustVariantPart(die, parent_die, class_clang_type,
+                              default_accessibility, layout_info);
++      } else if (cu_language == eLanguageTypeAda83 ||
++                 cu_language == eLanguageTypeAda95 ||
++                 cu_language == eLanguageTypeAda2005 ||
++                 cu_language == eLanguageTypeAda2012) {
++        ParseAdaVariantPart(die, parent_die, class_clang_type,
++                            default_accessibility, layout_info);
+       }
+-      break;
++    } break;
+
+     case DW_TAG_variable: {
+       const MemberAttributes attrs(die, parent_die, module_sp);
+@@ -3860,3 +3867,32 @@ void DWARFASTParserClang::ParseRustVariantPart(
+
+   layout_info.field_offsets.insert({inner_field, 0});
+ }
++
++void DWARFASTParserClang::ParseAdaVariantPart(
++    DWARFDIE &die, const DWARFDIE &parent_die, CompilerType &class_clang_type,
++    const lldb::AccessType default_accessibility,
++    ClangASTImporter::LayoutInfo &layout_info) {
++  assert(die.Tag() == llvm::dwarf::DW_TAG_variant_part);
++
++  ModuleSP module_sp = parent_die.GetDWARF()->GetObjectFile()->GetModule();
++  VariantPart variants(die, parent_die, module_sp);
++
++  // Ada discriminated records overlay their variant alternatives at the same
++  // record offset (union-like). Add each alternative's member directly to the
++  // enclosing record at its DWARF offset; LLDB's explicit field layout allows
++  // the overlap. All alternatives are added -- only the one selected by the
++  // current discriminant holds a meaningful value.
++  for (VariantMember &member : variants.members()) {
++    Type *member_type = die.ResolveTypeUID(member.type_ref.Reference());
++    if (member_type == nullptr)
++      continue;
++
++    const uint64_t bit_offset = static_cast<uint64_t>(member.byte_offset) * 8;
++    clang::FieldDecl *field_decl = TypeSystemClang::AddFieldToRecordType(
++        class_clang_type, member.GetName().GetStringRef(),
++        member_type->GetFullCompilerType(), default_accessibility,
++        /*bitfield_bit_size=*/0);
++    if (field_decl)
++      layout_info.field_offsets.insert(std::make_pair(field_decl, bit_offset));
++  }
++}
+diff --git a/lldb/source/Plugins/SymbolFile/DWARF/DWARFASTParserClang.h b/lldb/source/Plugins/SymbolFile/DWARF/DWARFASTParserClang.h
+index 4b0ae026b..e447577d6 100644
+--- a/lldb/source/Plugins/SymbolFile/DWARF/DWARFASTParserClang.h
++++ b/lldb/source/Plugins/SymbolFile/DWARF/DWARFASTParserClang.h
+@@ -470,6 +470,16 @@ private:
+                        lldb_private::CompilerType &class_clang_type,
+                        const lldb::AccessType default_accesibility,
+                        lldb_private::ClangASTImporter::LayoutInfo &layout_info);
++
++  /// Parse an Ada discriminated record's DW_TAG_variant_part by flattening each
++  /// alternative's member directly onto the enclosing record at its DWARF
++  /// offset (the alternatives overlap, union-like).
++  void
++  ParseAdaVariantPart(lldb_private::plugin::dwarf::DWARFDIE &die,
++                      const lldb_private::plugin::dwarf::DWARFDIE &parent_die,
++                      lldb_private::CompilerType &class_clang_type,
++                      const lldb::AccessType default_accessibility,
++                      lldb_private::ClangASTImporter::LayoutInfo &layout_info);
+ };
+
+ /// Parsed form of all attributes that are relevant for type reconstruction.
