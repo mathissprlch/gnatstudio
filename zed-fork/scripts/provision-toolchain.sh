@@ -117,13 +117,11 @@ install_recordflux() {
 # Docker-backed RecordFlux CLI (rflx).
 #
 # RecordFlux has no macOS wheel, so Zed GNAT runs it in a Linux container.
-# Resolution order, so it works online or offline:
-#   1. image already present in Docker   -> use it
-#   2. pull the prebuilt image from GHCR -> tag + use (instant, ~100 MB once)
-#   3. a vendored image tarball alongside-> docker load it
-#   4. otherwise                         -> docker build from the Dockerfile
-#                                           (the wheel image; ~2 min, mostly
-#                                           download)
+# Resolution order:
+#   1. image already present in Docker    -> use it
+#   2. a vendored image tarball alongside -> docker load it
+#   3. otherwise                          -> docker build the wheel image from
+#                                            the Dockerfile (~2 min, first run)
 # The image is linux/amd64 (RecordFlux's wheel is x86_64-only); on Apple Silicon
 # it runs under Docker's emulation, which is fine for the prebuilt CLI. Docker is
 # assumed installed on the host. Drop-in for the rflx the LSP calls: the current
@@ -151,13 +149,10 @@ fi
 version="$(sed -n 's/^ARG RECORDFLUX_VERSION=//p' "${share}/recordflux.Dockerfile" 2>/dev/null | head -n1)"
 version="${version:-latest}"
 image="zed-gnat/recordflux:${version}"
-remote="ghcr.io/mathissprlch/recordflux:${version}"
 platform="linux/amd64"
 
 if ! docker image inspect "${image}" >/dev/null 2>&1; then
-  if docker pull --platform "${platform}" "${remote}" >/dev/null 2>&1; then
-    docker tag "${remote}" "${image}"
-  elif [ -f "${share}/recordflux-image.tar.gz" ]; then
+  if [ -f "${share}/recordflux-image.tar.gz" ]; then
     echo "rflx: loading bundled RecordFlux image (first run only)..." >&2
     gunzip -c "${share}/recordflux-image.tar.gz" | docker load >&2
   elif [ -f "${share}/recordflux.Dockerfile" ]; then
