@@ -1,0 +1,32 @@
+# M0 bridge: consult Ada data formatters for C/C++-reported values.
+#
+# Under M0, GNAT/Ada types are rendered through TypeSystemClang, so a value's
+# CompilerType reports its language as C/C++ and FormatManager only consults
+# the C++/ObjC language categories -- never Ada. This adds eLanguageTypeAda95
+# to the candidate-language list for C/C++ values so Ada's structural
+# formatters (e.g. the unconstrained-String summary in the AdaLanguage plugin)
+# are applied. The Ada matchers key off GNAT's P_ARRAY + P_BOUNDS fat-pointer
+# shape, so they do not affect genuine C/C++ values.
+#
+# This is a temporary bridge: once a dedicated TypeSystemAda reports
+# eLanguageTypeAda* directly, revert this one change. Verified against
+# release/19.x.
+diff --git a/lldb/source/DataFormatters/FormatManager.cpp b/lldb/source/DataFormatters/FormatManager.cpp
+index 7e19989a8..f4d643347 100644
+--- a/lldb/source/DataFormatters/FormatManager.cpp
++++ b/lldb/source/DataFormatters/FormatManager.cpp
+@@ -576,7 +576,13 @@ FormatManager::GetCandidateLanguages(lldb::LanguageType lang_type) {
+   case lldb::eLanguageTypeC_plus_plus_03:
+   case lldb::eLanguageTypeC_plus_plus_11:
+   case lldb::eLanguageTypeC_plus_plus_14:
+-    return {lldb::eLanguageTypeC_plus_plus, lldb::eLanguageTypeObjC};
++    // M0 bridge: GNAT/Ada types are currently rendered through TypeSystemClang,
++    // so an Ada value reports its language as C/C++ here. Also consult the Ada
++    // language category so Ada's structural formatters (e.g. unconstrained
++    // String fat pointers) are applied. Remove once a dedicated TypeSystemAda
++    // reports eLanguageTypeAda* directly.
++    return {lldb::eLanguageTypeC_plus_plus, lldb::eLanguageTypeObjC,
++            lldb::eLanguageTypeAda95};
+   default:
+     return {lang_type};
+   }
