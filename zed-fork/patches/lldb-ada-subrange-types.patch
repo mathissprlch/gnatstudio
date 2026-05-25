@@ -1,0 +1,42 @@
+# M2: handle standalone Ada subrange types (subtypes + fat-pointer bounds).
+#
+# GNAT emits Ada subtypes (Natural, Positive, user-defined integer ranges) and
+# the LB/UB bound members of unconstrained-array fat pointers as standalone
+# DW_TAG_subrange_type DIEs used directly as a variable's type. DWARFASTParserClang
+# only handled subranges inside arrays, so a standalone subrange hit the default
+# case and errored ("unhandled type tag DW_TAG_subrange_type"), spilling errors
+# into the Variables pane and dropping the variable.
+#
+# Route DW_TAG_subrange_type through ParseTypeModifier as a typedef of its
+# underlying base type (every GNAT subrange carries DW_AT_type). Ada subtypes
+# now render with their values, e.g. a `Natural` shows `(natural) len = 10`.
+#
+# Verified against release/19.x. NOTE: this stops the errors and renders
+# subtypes; presenting an unconstrained array's CONTENT (a fat pointer as the
+# actual string/slice) still needs a synthetic formatter (AdaLanguage plugin).
+diff --git a/lldb/source/Plugins/SymbolFile/DWARF/DWARFASTParserClang.cpp b/lldb/source/Plugins/SymbolFile/DWARF/DWARFASTParserClang.cpp
+index ac769ad9f..8a820dbd2 100644
+--- a/lldb/source/Plugins/SymbolFile/DWARF/DWARFASTParserClang.cpp
++++ b/lldb/source/Plugins/SymbolFile/DWARF/DWARFASTParserClang.cpp
+@@ -490,6 +490,7 @@ TypeSP DWARFASTParserClang::ParseTypeFromDWARF(const SymbolContext &sc,
+     case DW_TAG_LLVM_ptrauth_type:
+     case DW_TAG_atomic_type:
+     case DW_TAG_unspecified_type:
++    case DW_TAG_subrange_type:
+       type_sp = ParseTypeModifier(sc, die, attrs);
+       break;
+     case DW_TAG_structure_type:
+@@ -690,6 +691,13 @@ DWARFASTParserClang::ParseTypeModifier(const SymbolContext &sc,
+   case DW_TAG_typedef:
+     encoding_data_type = Type::eEncodingIsTypedefUID;
+     break;
++  case DW_TAG_subrange_type:
++    // Ada subtypes (Natural, Positive, user ranges) and the bound members of
++    // GNAT unconstrained-array fat pointers appear as standalone subrange
++    // types; treat a subrange as a typedef of its underlying base type rather
++    // than erroring with "unhandled type tag".
++    encoding_data_type = Type::eEncodingIsTypedefUID;
++    break;
+   case DW_TAG_const_type:
+     encoding_data_type = Type::eEncodingIsConstUID;
+     break;
