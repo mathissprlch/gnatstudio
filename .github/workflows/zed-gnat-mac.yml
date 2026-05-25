@@ -9,7 +9,7 @@ on:
   push:
     branches:
       - master
-      - 'claude/add-gnat-tooling-zed-**'
+      - 'claude/**'
     paths:
       - 'zed-fork/**'
       - '.github/workflows/zed-gnat-mac.yml'
