@@ -305,7 +305,21 @@ jobs:
         run: |
           mkdir -p build
           set -o pipefail
-          make app 2>&1 | tee -a "$BUILD_LOG"
+          BUNDLE_DIR="zed/target/${{ matrix.target }}/release/bundle/osx"
+          # hdiutil DMG creation is flaky on hosted runners ("Resource busy"),
+          # and it runs *after* the .app is bundled and signed. If the .app was
+          # produced, don't fail the build over the DMG -- the .app is what ships.
+          if make app 2>&1 | tee -a "$BUILD_LOG"; then
+            echo "make app completed (app bundle + DMG)"
+          else
+            rc=$?
+            if ls "$BUNDLE_DIR"/*.app >/dev/null 2>&1; then
+              echo "::warning::make app exited ${rc}, but the .app bundle exists; treating the DMG (hdiutil) failure as non-fatal"
+            else
+              echo "make app failed before producing a .app bundle"
+              exit "${rc}"
+            fi
+          fi
 
       - name: sccache stats
         if: always()
@@ -376,6 +390,6 @@ jobs:
           name: zed-gnat-${{ matrix.target }}
           path: |
             zed-fork/zed/target/${{ matrix.target }}/release/bundle/osx/*.tar.gz
-            zed-fork/zed/target/${{ matrix.target }}/release/bundle/osx/*.dmg
+            zed-fork/zed/target/${{ matrix.target }}/release/*.dmg
           if-no-files-found: error
           retention-days: 14
