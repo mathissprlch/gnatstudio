@@ -25,11 +25,12 @@ on:
         default: 'stable'
         options: [stable, preview, nightly, dev]
 
-# Cancel superseded runs only on PRs; on push to a tracked branch let each
-# attempt finish so the failure log step actually fires.
+# Never cancel in-progress runs (so a DMG build always finishes); the group
+# serializes runs instead, so rapid pushes queue rather than pile up or kill
+# each other. With sccache the queued builds are cheap.
 concurrency:
   group: zed-gnat-mac-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
