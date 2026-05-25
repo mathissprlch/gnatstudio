@@ -1,0 +1,51 @@
+name: Publish RecordFlux image
+
+# Build the linux/amd64 rflx image (RecordFlux's prebuilt wheel) and push it to
+# GHCR, so the bundled rflx shim can pull it instead of building on first use.
+# Cheap and fast (no source build) and runs only when the image definition
+# changes. Make the resulting package public (Packages -> recordflux ->
+# settings) so the shim can pull it anonymously; otherwise the shim falls back
+# to a ~2 min local build.
+on:
+  push:
+    branches:
+      - master
+      - 'claude/**'
+    paths:
+      - 'zed-fork/docker/recordflux.Dockerfile'
+      - '.github/workflows/recordflux-image.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: recordflux-image-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve RecordFlux version
+        id: ver
+        run: |
+          v="$(sed -n 's/^ARG RECORDFLUX_VERSION=//p' zed-fork/docker/recordflux.Dockerfile | head -n1)"
+          echo "v=${v:-latest}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Build and push (linux/amd64)
+        run: |
+          set -euo pipefail
+          owner="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          img="ghcr.io/${owner}/recordflux:${{ steps.ver.outputs.v }}"
+          docker build --platform linux/amd64 -t "$img" \
+            -f zed-fork/docker/recordflux.Dockerfile zed-fork/docker
+          docker push "$img"
+          echo "Pushed $img"
+          docker run --rm --platform linux/amd64 "$img" --version
