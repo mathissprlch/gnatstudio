@@ -1,0 +1,41 @@
+# M1: Ada array lower bound defaults to 1, not 0.
+#
+# GNAT emits array subranges with only DW_AT_upper_bound and no
+# DW_AT_lower_bound, relying on the DWARF rule that the default lower bound is
+# language-defined (0 for C/C++, 1 for Ada). DWARFASTParser used the C default
+# of 0, so an Ada `array (1 .. 3)` rendered as 4 elements (indices 0..3) with a
+# junk trailing slot. Default the lower bound to 1 for Ada compilation units so
+# the element count is correct; an explicit DW_AT_lower_bound still overrides.
+#
+# Verified against release/19.x: `array (1 .. 3) of Integer := (10, 20, 30)` now
+# shows `int[3] = ([0]=10, [1]=20, [2]=30)` instead of a 4-element array. (Index
+# display is still 0-based; Ada 1-based indices are a later formatter change.)
+diff --git a/lldb/source/Plugins/SymbolFile/DWARF/DWARFASTParser.cpp b/lldb/source/Plugins/SymbolFile/DWARF/DWARFASTParser.cpp
+index 409e9bb37..bd3379c42 100644
+--- a/lldb/source/Plugins/SymbolFile/DWARF/DWARFASTParser.cpp
++++ b/lldb/source/Plugins/SymbolFile/DWARF/DWARFASTParser.cpp
+@@ -9,6 +9,7 @@
+ #include "DWARFASTParser.h"
+ #include "DWARFAttribute.h"
+ #include "DWARFDIE.h"
++#include "DWARFUnit.h"
+ #include "SymbolFileDWARF.h"
+
+ #include "lldb/Core/ValueObject.h"
+@@ -38,7 +39,16 @@ DWARFASTParser::ParseChildArrayInfo(const DWARFDIE &parent_die,
+       continue;
+
+     uint64_t num_elements = 0;
++    // The default array lower bound is language-defined: 0 for C/C++ but 1 for
++    // Ada. GNAT omits DW_AT_lower_bound and relies on the Ada default, so
++    // without this an Ada array gets one element too many.
+     uint64_t lower_bound = 0;
++    const uint64_t cu_language = parent_die.GetCU()->GetDWARFLanguageType();
++    if (cu_language == lldb::eLanguageTypeAda83 ||
++        cu_language == lldb::eLanguageTypeAda95 ||
++        cu_language == lldb::eLanguageTypeAda2005 ||
++        cu_language == lldb::eLanguageTypeAda2012)
++      lower_bound = 1;
+     uint64_t upper_bound = 0;
+     bool upper_bound_valid = false;
+     for (size_t i = 0; i < attributes.Size(); ++i) {
