@@ -1,5 +1,13 @@
+# Make TypeSystemClang accept Ada as a base type system.
+#
+# GNAT emits standard DWARF whose core type model maps onto the Clang AST, so
+# the dedicated TypeSystemAda plugin (lldb-ada-typesystem-ada.patch) subclasses
+# TypeSystemClang. This only teaches TypeSystemClangSupportsLanguage to accept
+# Ada; the PluginManager registration that routes Ada units is owned by the
+# TypeSystemAda plugin, so Ada is intentionally NOT added to
+# GetSupportedLanguagesForTypes here (that would make routing ambiguous).
 diff --git a/lldb/source/Plugins/TypeSystem/Clang/TypeSystemClang.cpp b/lldb/source/Plugins/TypeSystem/Clang/TypeSystemClang.cpp
-index f70efe5ed..4c7a81931 100644
+index f70efe5ed..0a167775a 100644
 --- a/lldb/source/Plugins/TypeSystem/Clang/TypeSystemClang.cpp
 +++ b/lldb/source/Plugins/TypeSystem/Clang/TypeSystemClang.cpp
 @@ -115,7 +115,13 @@ TypeSystemClangSupportsLanguage(lldb::LanguageType language) {
@@ -17,17 +25,12 @@ index f70efe5ed..4c7a81931 100644
  }
  
  // Checks whether m1 is an overload of m2 (as opposed to an override). This is
-@@ -572,6 +578,13 @@ LanguageSet TypeSystemClang::GetSupportedLanguagesForTypes() {
+@@ -572,6 +578,8 @@ LanguageSet TypeSystemClang::GetSupportedLanguagesForTypes() {
    languages.Insert(lldb::eLanguageTypeC_plus_plus_14);
    languages.Insert(lldb::eLanguageTypeC_plus_plus_17);
    languages.Insert(lldb::eLanguageTypeC_plus_plus_20);
-+  // Ada rides on the Clang type system for now (see
-+  // TypeSystemClangSupportsLanguage); only types are supported, not
-+  // expression evaluation.
-+  languages.Insert(lldb::eLanguageTypeAda83);
-+  languages.Insert(lldb::eLanguageTypeAda95);
-+  languages.Insert(lldb::eLanguageTypeAda2005);
-+  languages.Insert(lldb::eLanguageTypeAda2012);
++  // Ada is handled by the dedicated TypeSystemAda plugin (a TypeSystemClang
++  // subclass), so it is intentionally not registered here.
    return languages;
  }
  
