@@ -228,23 +228,26 @@ jobs:
       - name: Set up sccache
         uses: mozilla-actions/sccache-action@v0.0.6
 
-      - name: Enable sccache only if its cache backend is reachable
+      - name: Enable sccache only if its cache backend works
         env:
           SCCACHE_GHA_ENABLED: "true"
         run: |
           # A GHA cache-service outage makes sccache's server fail to start, and
           # with RUSTC_WRAPPER=sccache that turns even `cargo fetch` (which calls
-          # `rustc -vV`) into a hard error that kills the build. Probe the backend
-          # first; only wire sccache in when it actually works.
+          # `rustc -vV`) into a hard error that kills the build. `--start-server`
+          # alone doesn't detect this, so probe with the *exact* command cargo
+          # runs through the wrapper: if `sccache <rustc> -vV` succeeds the real
+          # build will too; otherwise build without sccache this run.
           set +e
-          sccache --start-server 2> /tmp/sccache-start.log
+          RUSTC_BIN="$(rustup which rustc 2>/dev/null || command -v rustc)"
+          sccache "$RUSTC_BIN" -vV > /dev/null 2> /tmp/sccache-probe.log
           if [ $? -eq 0 ]; then
-            echo "sccache backend reachable -> enabling rustc wrapper"
+            echo "sccache backend works -> enabling rustc wrapper"
             echo "RUSTC_WRAPPER=sccache"   >> "$GITHUB_ENV"
             echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
           else
             echo "::warning::sccache cache backend unavailable; building without sccache this run"
-            cat /tmp/sccache-start.log || true
+            cat /tmp/sccache-probe.log || true
           fi
 
       - name: Cache cargo
