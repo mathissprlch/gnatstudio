@@ -116,15 +116,19 @@ install_recordflux() {
 #!/usr/bin/env bash
 # Docker-backed RecordFlux CLI (rflx).
 #
-# RecordFlux has no macOS wheel, so Zed GNAT runs it in a Linux container. The
-# image is resolved in this order, so the same shim works whether or not a
-# prebuilt image was vendored into the bundle:
-#   1. already present in Docker        -> use it
-#   2. vendored image tarball alongside -> docker load it (no build)
-#   3. otherwise                        -> docker build from the Dockerfile
-# Docker is assumed installed on the host. Drop-in for the rflx the LSP calls:
-# the current directory is bind-mounted at the same path so file arguments and
-# the generate output directory resolve identically inside the container.
+# RecordFlux has no macOS wheel, so Zed GNAT runs it in a Linux container.
+# Resolution order, so it works online or offline:
+#   1. image already present in Docker   -> use it
+#   2. pull the prebuilt image from GHCR -> tag + use (instant, ~100 MB once)
+#   3. a vendored image tarball alongside-> docker load it
+#   4. otherwise                         -> docker build from the Dockerfile
+#                                           (the wheel image; ~2 min, mostly
+#                                           download)
+# The image is linux/amd64 (RecordFlux's wheel is x86_64-only); on Apple Silicon
+# it runs under Docker's emulation, which is fine for the prebuilt CLI. Docker is
+# assumed installed on the host. Drop-in for the rflx the LSP calls: the current
+# directory is bind-mounted at the same path so file arguments and the generate
+# output directory resolve identically inside the container.
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -145,23 +149,29 @@ if [ -z "${share}" ]; then
 fi
 
 version="$(sed -n 's/^ARG RECORDFLUX_VERSION=//p' "${share}/recordflux.Dockerfile" 2>/dev/null | head -n1)"
-image="zed-gnat/recordflux:${version:-latest}"
+version="${version:-latest}"
+image="zed-gnat/recordflux:${version}"
+remote="ghcr.io/mathissprlch/recordflux:${version}"
+platform="linux/amd64"
 
 if ! docker image inspect "${image}" >/dev/null 2>&1; then
-  if [ -f "${share}/recordflux-image.tar.gz" ]; then
+  if docker pull --platform "${platform}" "${remote}" >/dev/null 2>&1; then
+    docker tag "${remote}" "${image}"
+  elif [ -f "${share}/recordflux-image.tar.gz" ]; then
     echo "rflx: loading bundled RecordFlux image (first run only)..." >&2
     gunzip -c "${share}/recordflux-image.tar.gz" | docker load >&2
   elif [ -f "${share}/recordflux.Dockerfile" ]; then
-    echo "rflx: building ${image} from the vendored Dockerfile (first run; this takes a while)..." >&2
-    docker build -q -t "${image}" -f "${share}/recordflux.Dockerfile" "${share}" >&2
+    echo "rflx: building ${image} from the vendored Dockerfile (first run; ~2 min)..." >&2
+    docker build --platform "${platform}" -q -t "${image}" \
+      -f "${share}/recordflux.Dockerfile" "${share}" >&2
   else
-    echo "rflx: no bundled image tarball or Dockerfile found in ${share}" >&2
+    echo "rflx: no image, tarball, or Dockerfile found in ${share}" >&2
     exit 1
   fi
 fi
 
 workdir="$(pwd)"
-exec docker run --rm \
+exec docker run --rm --platform "${platform}" \
   --user "$(id -u):$(id -g)" \
   --env HOME=/tmp \
   --volume "${workdir}:${workdir}" \
