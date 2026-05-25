@@ -1,0 +1,40 @@
+# M2: render Ada fixed-point types -- resolve the encoding to its integer.
+#
+# GNAT (-fgnat-encodings=minimal) emits ordinary and decimal fixed-point types as
+# DW_TAG_base_type with DW_ATE_signed_fixed / DW_ATE_unsigned_fixed plus a
+# DW_AT_binary_scale (power of two) or DW_AT_decimal_scale (power of ten). LLDB's
+# Clang type system has no fixed-point type and left these encodings in the
+# default: arm of GetBuiltinTypeForDWARFEncodingAndBitSize, returning an invalid
+# type -- so a fixed-point variable did not render at all.
+#
+# Resolve *_fixed to the underlying signed/unsigned integer of the same size (fall
+# through to the existing DW_ATE_signed / DW_ATE_unsigned handling). The value
+# then renders as its raw stored integer; the AdaLanguage data formatter (a
+# separate change) reads the scale and prints the real value. These are standard
+# DWARF encodings, so resolving them is safe for non-Ada units too.
+diff --git a/lldb/source/Plugins/TypeSystem/Clang/TypeSystemClang.cpp b/lldb/source/Plugins/TypeSystem/Clang/TypeSystemClang.cpp
+index f70efe5..0a93afb 100644
+--- a/lldb/source/Plugins/TypeSystem/Clang/TypeSystemClang.cpp
++++ b/lldb/source/Plugins/TypeSystem/Clang/TypeSystemClang.cpp
+@@ -959,6 +959,13 @@ CompilerType TypeSystemClang::GetBuiltinTypeForDWARFEncodingAndBitSize(
+       return GetType(ast.HalfTy);
+     break;
+ 
++  // Ada fixed-point types (GNAT with -fgnat-encodings=minimal) use the
++  // DW_ATE_signed_fixed / DW_ATE_unsigned_fixed encodings with a
++  // DW_AT_binary_scale or DW_AT_decimal_scale. lldb has no fixed-point type, so
++  // resolve them to the underlying integer here -- otherwise the variable's type
++  // is invalid and it does not render at all. The AdaLanguage data formatter
++  // applies the scale to display the real (scaled) value.
++  case DW_ATE_signed_fixed:
+   case DW_ATE_signed:
+     if (!type_name.empty()) {
+       if (type_name == "wchar_t" &&
+@@ -1015,6 +1022,7 @@ CompilerType TypeSystemClang::GetBuiltinTypeForDWARFEncodingAndBitSize(
+       return GetType(ast.SignedCharTy);
+     break;
+ 
++  case DW_ATE_unsigned_fixed:
+   case DW_ATE_unsigned:
+     if (!type_name.empty()) {
+       if (type_name == "wchar_t") {
