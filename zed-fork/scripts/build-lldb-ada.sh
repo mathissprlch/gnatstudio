@@ -80,7 +80,7 @@ ninja -C "$BUILD" -j"$JOBS" liblldb
 # so it works cross-arch (DWARF parsing is target-independent).
 if [ "${SELFTEST:-1}" = "1" ]; then
   ninja -C "$BUILD" -j"$JOBS" lldb
-  FIXTURE="$(cd "$(dirname "${BASH_SOURCE[0]}")/../test" && pwd)/ada_min.o"
+  FIXTURE="$(cd "$(dirname "${BASH_SOURCE[0]}")/../test" && pwd)/ada_min.fixture"
   echo ">> self-test: image lookup -t integer on $FIXTURE"
   probe="$("$BUILD/bin/lldb" -b -o "image lookup -t integer" -o quit "$FIXTURE" 2>&1 || true)"
   echo "$probe"
