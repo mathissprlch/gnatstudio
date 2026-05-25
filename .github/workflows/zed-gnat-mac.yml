@@ -305,21 +305,10 @@ jobs:
         run: |
           mkdir -p build
           set -o pipefail
-          BUNDLE_DIR="zed/target/${{ matrix.target }}/release/bundle/osx"
-          # hdiutil DMG creation is flaky on hosted runners ("Resource busy"),
-          # and it runs *after* the .app is bundled and signed. If the .app was
-          # produced, don't fail the build over the DMG -- the .app is what ships.
-          if make app 2>&1 | tee -a "$BUILD_LOG"; then
-            echo "make app completed (app bundle + DMG)"
-          else
-            rc=$?
-            if ls "$BUNDLE_DIR"/*.app >/dev/null 2>&1; then
-              echo "::warning::make app exited ${rc}, but the .app bundle exists; treating the DMG (hdiutil) failure as non-fatal"
-            else
-              echo "make app failed before producing a .app bundle"
-              exit "${rc}"
-            fi
-          fi
+          # bundle-mac.sh already tolerates upstream Zed's flaky, discarded DMG
+          # step (hdiutil "Resource busy") and keeps the toolchain-injected .app,
+          # which is the only thing we ship.
+          make app 2>&1 | tee -a "$BUILD_LOG"
 
       - name: sccache stats
         if: always()
@@ -388,8 +377,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: zed-gnat-${{ matrix.target }}
-          path: |
-            zed-fork/zed/target/${{ matrix.target }}/release/bundle/osx/*.tar.gz
-            zed-fork/zed/target/${{ matrix.target }}/release/*.dmg
+          # Only the toolchain-injected .app (zipped). We deliberately do not
+          # ship the upstream DMG -- it is built before toolchain injection, so
+          # it would be a plain Zed without GNAT.
+          path: zed-fork/zed/target/${{ matrix.target }}/release/bundle/osx/*.tar.gz
           if-no-files-found: error
           retention-days: 14
