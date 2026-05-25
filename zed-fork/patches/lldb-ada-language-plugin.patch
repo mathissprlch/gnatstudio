@@ -1,0 +1,132 @@
+# M1/M2: AdaLanguage plugin (skeleton).
+#
+# Adds a dedicated lldb_private::Language plugin for Ada (registered for
+# DW_LANG_Ada83/95/2005/2012). On its own this only registers the language
+# (source-file detection, entry point, plugin identity) with no behaviour
+# change to variable rendering -- it is the foundation that the Ada-specific
+# data formatters hang off (later patches add: hide inactive variant-record
+# alternatives via the discriminant, present GNAT unconstrained-array fat
+# pointers as their string/slice content, Ada-style type names, and 1-based
+# array indices).
+#
+# Auto-registers via the PLUGIN cmake keyword + LLDB_PLUGIN_DEFINE, so no
+# SystemInitializer edit is needed. Verified against release/19.x: builds,
+# appears in the generated Plugins.def, and does not regress existing output.
+diff --git a/lldb/source/Plugins/Language/Ada/AdaLanguage.cpp b/lldb/source/Plugins/Language/Ada/AdaLanguage.cpp
+new file mode 100644
+index 000000000..1e6c3e0db
+--- /dev/null
++++ b/lldb/source/Plugins/Language/Ada/AdaLanguage.cpp
+@@ -0,0 +1,39 @@
++//===-- AdaLanguage.cpp ---------------------------------------------------===//
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++
++#include "AdaLanguage.h"
++#include "lldb/Core/PluginManager.h"
++#include "llvm/ADT/StringRef.h"
++
++using namespace lldb;
++using namespace lldb_private;
++
++LLDB_PLUGIN_DEFINE(AdaLanguage)
++
++void AdaLanguage::Initialize() {
++  PluginManager::RegisterPlugin(GetPluginNameStatic(), "Ada Language",
++                                CreateInstance);
++}
++
++void AdaLanguage::Terminate() { PluginManager::UnregisterPlugin(CreateInstance); }
++
++Language *AdaLanguage::CreateInstance(lldb::LanguageType language) {
++  switch (language) {
++  case eLanguageTypeAda83:
++  case eLanguageTypeAda95:
++  case eLanguageTypeAda2005:
++  case eLanguageTypeAda2012:
++    return new AdaLanguage();
++  default:
++    return nullptr;
++  }
++}
++
++bool AdaLanguage::IsSourceFile(llvm::StringRef file_path) const {
++  return file_path.ends_with(".adb") || file_path.ends_with(".ads");
++}
+diff --git a/lldb/source/Plugins/Language/Ada/AdaLanguage.h b/lldb/source/Plugins/Language/Ada/AdaLanguage.h
+new file mode 100644
+index 000000000..a863f6cb6
+--- /dev/null
++++ b/lldb/source/Plugins/Language/Ada/AdaLanguage.h
+@@ -0,0 +1,45 @@
++//===-- AdaLanguage.h -----------------------------------------------------===//
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++
++#ifndef LLDB_SOURCE_PLUGINS_LANGUAGE_ADA_ADALANGUAGE_H
++#define LLDB_SOURCE_PLUGINS_LANGUAGE_ADA_ADALANGUAGE_H
++
++#include "lldb/Target/Language.h"
++#include "lldb/lldb-private.h"
++
++namespace lldb_private {
++
++class AdaLanguage : public Language {
++public:
++  AdaLanguage() = default;
++  ~AdaLanguage() override = default;
++
++  lldb::LanguageType GetLanguageType() const override {
++    return lldb::eLanguageTypeAda95;
++  }
++
++  llvm::StringRef GetUserEntryPointName() const override { return "main"; }
++
++  bool IsSourceFile(llvm::StringRef file_path) const override;
++
++  // Static Functions
++  static void Initialize();
++
++  static void Terminate();
++
++  static lldb_private::Language *CreateInstance(lldb::LanguageType language);
++
++  static llvm::StringRef GetPluginNameStatic() { return "ada"; }
++
++  // PluginInterface protocol
++  llvm::StringRef GetPluginName() override { return GetPluginNameStatic(); }
++};
++
++} // namespace lldb_private
++
++#endif // LLDB_SOURCE_PLUGINS_LANGUAGE_ADA_ADALANGUAGE_H
+diff --git a/lldb/source/Plugins/Language/Ada/CMakeLists.txt b/lldb/source/Plugins/Language/Ada/CMakeLists.txt
+new file mode 100644
+index 000000000..07c81b5a6
+--- /dev/null
++++ b/lldb/source/Plugins/Language/Ada/CMakeLists.txt
+@@ -0,0 +1,7 @@
++add_lldb_library(lldbPluginAdaLanguage PLUGIN
++  AdaLanguage.cpp
++
++  LINK_LIBS
++    lldbCore
++    lldbTarget
++)
+diff --git a/lldb/source/Plugins/Language/CMakeLists.txt b/lldb/source/Plugins/Language/CMakeLists.txt
+index 786907456..e51cb2999 100644
+--- a/lldb/source/Plugins/Language/CMakeLists.txt
++++ b/lldb/source/Plugins/Language/CMakeLists.txt
+@@ -1,3 +1,4 @@
++add_subdirectory(Ada)
+ add_subdirectory(ClangCommon)
+ add_subdirectory(CPlusPlus)
+ add_subdirectory(ObjC)
