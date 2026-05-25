@@ -20,6 +20,22 @@ pub(crate) struct CodeLldbDebugAdapter {
 impl CodeLldbDebugAdapter {
     const ADAPTER_NAME: &'static str = "CodeLLDB";
 
+    /// Zed GNAT.app ships an Ada-patched codelldb under Contents/Resources.
+    /// Prefer it over downloading upstream codelldb, which has no Ada type
+    /// support and would render no Ada variables. Resolved relative to the
+    /// running executable so it works wherever the app is installed.
+    fn bundled_codelldb_path() -> Option<String> {
+        let exe = std::env::current_exe().ok()?;
+        let contents = exe.parent()?.parent()?;
+        let adapter = contents.join(format!(
+            "Resources/tools/codelldb/extension/adapter/codelldb{}",
+            consts::EXE_SUFFIX
+        ));
+        adapter
+            .is_file()
+            .then(|| adapter.to_string_lossy().into_owned())
+    }
+
     async fn request_args(
         &self,
         delegate: &Arc<dyn DapDelegate>,
@@ -335,7 +351,8 @@ impl DebugAdapter for CodeLldbDebugAdapter {
     ) -> Result<DebugAdapterBinary> {
         let mut command = user_installed_path
             .map(|p| p.to_string_lossy().into_owned())
-            .or(self.path_to_codelldb.get().cloned());
+            .or(self.path_to_codelldb.get().cloned())
+            .or_else(Self::bundled_codelldb_path);
 
         if command.is_none() {
             delegate.output_to_console(format!("Checking latest version of {}...", self.name()));
