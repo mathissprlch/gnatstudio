@@ -62,6 +62,29 @@ of the same size, so the value renders (as its raw stored integer); a follow-up
 `AdaLanguage` formatter reads the scale and prints the real (scaled) value. These
 are standard DWARF encodings, so resolving them is safe for non-Ada units too.
 
+## `lldb-ada-z-fixed-point-scale.patch` (M2)
+
+Builds on `lldb-ada-fixed-point.patch` to render Ada fixed-point with the
+actual *scaled* value. The earlier patch made the type resolve (`bf = 40`,
+`m = 1999`); this one turns those into `bf = 2.5` and `m = 19.99`.
+
+The DWARF scale (`DW_AT_binary_scale` for ordinary fixed, `DW_AT_decimal_scale`
+for decimal fixed) is captured in `ParsedDWARFTypeAttributes` and applied at
+the base-type parse site. lldb's Clang AST deduplicates builtin integers (one
+`ShortTy`/`IntTy`/`LongLongTy` singleton per AST), so the scale cannot be keyed
+on the underlying integer's `QualType` without poisoning plain
+`Short_Integer`/`Long_Long_Integer` values. The patch wraps each fixed-point
+base in its own Clang typedef (`CreateTypedef`, named after the GNAT base
+type), giving it a unique `QualType`; the scale is stored in `TypeSystemAda`
+keyed on that typedef. The `AdaLanguage` formatter walks the value's typedef
+chain one hop at a time (not via canonical, which would skip past the
+fixed-point typedef back to bare `short`/`int`) and applies
+`raw * 2^binary_scale` or `raw * 10^decimal_scale` at render time.
+
+Named with a `z` prefix so it sorts last in the patches glob — it depends on
+both `lldb-ada-typesystem-ada.patch` (creates `TypeSystemAda`) and
+`lldb-ada-language-plugin.patch` (creates `AdaLanguage`).
+
 ## `lldb-ada-language-plugin.patch` (M1/M2)
 
 A dedicated `AdaLanguage` plugin registered for `DW_LANG_Ada*`, plus its first
