@@ -227,7 +227,7 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Set up sccache
-        uses: mozilla-actions/sccache-action@v0.0.6
+        uses: mozilla-actions/sccache-action@v0.0.10
 
       - name: Enable sccache only if its cache backend works
         env:
@@ -377,6 +377,13 @@ jobs:
             echo '```'
             sccache --show-stats 2>&1 | head -40 || echo "(sccache not available)"
             echo '```'
+            if [[ -z "${RUSTC_WRAPPER:-}" && -s /tmp/sccache-probe.log ]]; then
+              echo
+              echo "**Probe failure log (why sccache disabled itself):**"
+              echo '```'
+              head -40 /tmp/sccache-probe.log
+              echo '```'
+            fi
           } > "$out"
           cat "$out"
           PR_NUMBER="${{ github.event.pull_request.number }}"
