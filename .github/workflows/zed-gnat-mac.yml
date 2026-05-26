@@ -238,18 +238,28 @@ jobs:
           # `rustc -vV`) into a hard error that kills the build. `--start-server`
           # alone doesn't detect this, so probe with the *exact* command cargo
           # runs through the wrapper: if `sccache <rustc> -vV` succeeds the real
-          # build will too; otherwise build without sccache this run.
+          # build will too; otherwise build without sccache this run. Retry a
+          # couple times with backoff so a transient GHA cache hiccup doesn't
+          # cost us a 2h cold cargo build.
           set +e
           RUSTC_BIN="$(rustup which rustc 2>/dev/null || command -v rustc)"
-          sccache "$RUSTC_BIN" -vV > /dev/null 2> /tmp/sccache-probe.log
-          if [ $? -eq 0 ]; then
-            echo "sccache backend works -> enabling rustc wrapper"
-            echo "RUSTC_WRAPPER=sccache"   >> "$GITHUB_ENV"
-            echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
-          else
-            echo "::warning::sccache cache backend unavailable; building without sccache this run"
+          for attempt in 1 2 3; do
+            sccache --stop-server >/dev/null 2>&1 || true
+            sccache "$RUSTC_BIN" -vV > /dev/null 2> /tmp/sccache-probe.log
+            if [ $? -eq 0 ]; then
+              echo "sccache backend works on attempt ${attempt} -> enabling rustc wrapper"
+              echo "RUSTC_WRAPPER=sccache"   >> "$GITHUB_ENV"
+              echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
+              break
+            fi
+            echo "::warning::sccache probe attempt ${attempt} failed:"
             cat /tmp/sccache-probe.log || true
-          fi
+            if [ "$attempt" -lt 3 ]; then
+              sleep $((attempt * 5))
+            else
+              echo "::warning::sccache cache backend unavailable after 3 attempts; building without sccache this run"
+            fi
+          done
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -343,6 +353,42 @@ jobs:
       - name: sccache stats
         if: always()
         run: sccache --show-stats || true
+
+      # Post sccache stats to the PR on a successful build so we can see hit
+      # rate without log access -- the only reliable way to tell whether the
+      # 2h cargo build is "sccache off / cold" vs "sccache on / low hit" vs
+      # "intrinsic 500-crate compile". Failure path is covered by the next
+      # step.
+      - name: Report sccache stats to PR
+        if: success() && steps.build_app.conclusion == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set +e
+          mkdir -p zed-fork/build
+          out=zed-fork/build/sccache-stats.md
+          {
+            echo "### sccache stats — \`${{ matrix.target }}\` (build green)"
+            echo
+            echo "Commit: \`${{ github.sha }}\`"
+            echo "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo "RUSTC_WRAPPER: \`${RUSTC_WRAPPER:-(unset -- sccache disabled this run)}\`"
+            echo
+            echo '```'
+            sccache --show-stats 2>&1 | head -40 || echo "(sccache not available)"
+            echo '```'
+          } > "$out"
+          cat "$out"
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          if [[ -z "$PR_NUMBER" ]]; then
+            PR_NUMBER=$(gh pr list --repo "${{ github.repository }}" \
+                          --head "${{ github.ref_name }}" \
+                          --state open --json number --jq '.[0].number // empty')
+          fi
+          if [[ -n "$PR_NUMBER" ]]; then
+            gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}" \
+                --body-file "$out" && echo "posted to PR #$PR_NUMBER"
+          fi
 
       - name: Surface build failure
         if: failure() && steps.build_app.conclusion == 'failure'
