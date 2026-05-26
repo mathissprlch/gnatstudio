@@ -22,65 +22,15 @@
 set -euo pipefail
 
 TOOLCHAIN_DIR="${TOOLCHAIN_DIR:-${PWD}/build/toolchain}"
-ALIRE_VERSION="${ALIRE_VERSION:-2.0.2}"
 CODELLDB_VERSION="${CODELLDB_VERSION:-v1.11.5}"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-mkdir -p "${TOOLCHAIN_DIR}/bin"
-
-log()  { printf '== %s\n' "$*"; }
-warn() { printf '!! %s\n' "$*" >&2; }
-
-# ---------------------------------------------------------------------------
-
-install_alire_if_needed() {
-    if command -v alr >/dev/null 2>&1; then
-        log "alr already on PATH: $(command -v alr) ($(alr --version 2>/dev/null | head -1))"
-        return 0
-    fi
-
-    local os arch asset
-    os="$(uname -s | tr '[:upper:]' '[:lower:]')"
-    arch="$(uname -m)"
-    case "${os}-${arch}" in
-        darwin-arm64)  asset="alr-${ALIRE_VERSION}-bin-aarch64-macos.zip" ;;
-        darwin-x86_64) asset="alr-${ALIRE_VERSION}-bin-x86_64-macos.zip"  ;;
-        linux-x86_64)  asset="alr-${ALIRE_VERSION}-bin-x86_64-linux.zip"  ;;
-        *)
-            warn "no prebuilt Alire binary for ${os}-${arch}"
-            return 2
-            ;;
-    esac
-
-    local url="https://github.com/alire-project/alire/releases/download/v${ALIRE_VERSION}/${asset}"
-    local tmp
-    tmp="$(mktemp -d)"
-    log "downloading ${url}"
-    curl --fail --silent --show-error --location --output "${tmp}/alr.zip" "${url}"
-    (cd "${tmp}" && unzip -q alr.zip)
-    install -m 0755 "${tmp}/bin/alr" "${TOOLCHAIN_DIR}/bin/alr"
-    rm -rf "${tmp}"
-
-    export PATH="${TOOLCHAIN_DIR}/bin:${PATH}"
-    log "installed alr at ${TOOLCHAIN_DIR}/bin/alr"
-}
-
-# `alr install --prefix=DIR <crate>` is the supported way (Alire 2.x) to drop
-# a binary crate into a freestanding tree of bin/, lib/, share/.
-alr_install() {
-    local crate="$1"
-    log "alr install --prefix=${TOOLCHAIN_DIR} ${crate}"
-    if alr -n install --prefix="${TOOLCHAIN_DIR}" "${crate}"; then
-        return 0
-    fi
-    warn "alr install ${crate} failed; the bundle will be missing this tool"
-    return 0   # don't break the build for one missing crate
-}
-
-# Select the FSF GNAT + gprbuild toolchain that Alire will resolve against.
-select_default_toolchain() {
-    log "selecting default Alire toolchain (gnat_native + gprbuild)"
-    alr -n toolchain --select gnat_native gprbuild
-}
+# The heavy ~80% (Alire bootstrap + GNAT/ALS/SPARK installs) lives in its
+# own script so the CI toolchain cache key hashes only that file; edits to
+# the lighter, fast-iterating bits below (rflx shim copy, codelldb sourcing,
+# Python venv) leave the multi-GB Alire output cache warm. provision-gnat.sh
+# also exports the shared log/warn helpers and alr_install used elsewhere.
+. "${script_dir}/provision-gnat.sh"
 
 # ---------------------------------------------------------------------------
 
@@ -226,23 +176,12 @@ main() {
     if ! command -v curl  >/dev/null 2>&1; then warn "curl is required"; exit 1; fi
     if ! command -v unzip >/dev/null 2>&1; then warn "unzip is required"; exit 1; fi
 
-    install_alire_if_needed
-    select_default_toolchain
+    # Heavy bits (cache-keyed on provision-gnat.sh): Alire + GNAT + ALS + SPARK.
+    install_gnat_core
 
-    # FSF GNAT compiler (gnat, gnatmake, gnatbind, gnatlink, ...) and the
-    # GNAT runtime libs. `gnat_native` is the toolchain crate; `alr install`
-    # writes its bin/lib/share into ${TOOLCHAIN_DIR}.
-    alr_install gnat_native
-    alr_install gprbuild
-    alr_install ada_language_server
-    # spark2014 is published as a crate on Alire's community index; if it's
-    # missing on this platform alr_install just logs a warning.
-    alr_install spark2014
-
+    # Light bits (orchestrator-local; don't affect the toolchain cache key):
     install_recordflux
-
     bundle_codelldb
-
     relocate_macho
 
     log "Staged toolchain at ${TOOLCHAIN_DIR}"

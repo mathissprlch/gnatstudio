@@ -88,7 +88,7 @@ jobs:
           TARGETS: AArch64
           LLDB_ENABLE_PYTHON: 'OFF'
           CMAKE_ARGS: -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-          CCACHE_MAXSIZE: 3G
+          CCACHE_MAXSIZE: 1G
           CCACHE_COMPRESS: '1'
         run: |
           set -uo pipefail
@@ -265,12 +265,30 @@ jobs:
           restore-keys: zed-cargo-${{ matrix.target }}-
           save-always: true
 
+      # Alire's source-download cache (~/.cache/alire). Rolling key + prefix
+      # restore so it stays warm across runs; a hit saves ~5-10 min of
+      # re-downloading gnat_native even when the toolchain output cache misses.
+      - name: Cache Alire downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/alire
+          key: alire-downloads-${{ matrix.target }}-${{ github.sha }}
+          restore-keys: alire-downloads-${{ matrix.target }}-
+          save-always: true
+
+      # Toolchain output cache is keyed only on provision-gnat.sh -- the
+      # heavy 80% (Alire + GNAT + ALS + SPARK). Edits to the orchestrator
+      # (provision-toolchain.sh) or lighter bits (rflx shim, codelldb,
+      # Python venv) leave this cache warm. restore-keys degrades gracefully:
+      # Alire is idempotent, so re-provisioning on top of a restored tree is
+      # a fast delta.
       - name: Cache toolchain
         id: toolchain-cache
         uses: actions/cache@v4
         with:
           path: zed-fork/build/toolchain
-          key: gnat-toolchain-${{ matrix.target }}-${{ hashFiles('zed-fork/scripts/provision-toolchain.sh', 'zed-fork/scripts/relocate-toolchain.py') }}
+          key: gnat-toolchain-${{ matrix.target }}-${{ hashFiles('zed-fork/scripts/provision-gnat.sh', 'zed-fork/scripts/relocate-toolchain.py') }}
+          restore-keys: gnat-toolchain-${{ matrix.target }}-
           save-always: true
 
       - name: Stage GNAT toolchain
