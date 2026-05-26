@@ -112,67 +112,14 @@ install_recordflux() {
     mkdir -p "${share_dir}"
     cp "${dockerfile_src}" "${share_dir}/recordflux.Dockerfile"
 
-    cat > "${TOOLCHAIN_DIR}/bin/rflx" <<'RFLX'
-#!/usr/bin/env bash
-# Docker-backed RecordFlux CLI (rflx).
-#
-# RecordFlux has no macOS wheel, so Zed GNAT runs it in a Linux container.
-# Resolution order:
-#   1. image already present in Docker    -> use it
-#   2. a vendored image tarball alongside -> docker load it
-#   3. otherwise                          -> docker build the wheel image from
-#                                            the Dockerfile (~2 min, first run)
-# The image is linux/amd64 (RecordFlux's wheel is x86_64-only); on Apple Silicon
-# it runs under Docker's emulation, which is fine for the prebuilt CLI. Docker is
-# assumed installed on the host. Drop-in for the rflx the LSP calls: the current
-# directory is bind-mounted at the same path so file arguments and the generate
-# output directory resolve identically inside the container.
-set -euo pipefail
-
-here="$(cd "$(dirname "$0")" && pwd)"
-share="$(cd "${here}/../share/recordflux" 2>/dev/null && pwd || true)"
-
-if ! command -v docker >/dev/null 2>&1; then
-  cat >&2 <<'MSG'
-rflx: Docker is required to run RecordFlux on this platform (RecordFlux ships no
-      macOS wheel). Install Docker Desktop, OrbStack, or colima, make sure
-      `docker` is on PATH, and retry.
-MSG
-  exit 127
-fi
-
-if [ -z "${share}" ]; then
-  echo "rflx: vendored RecordFlux assets not found next to this shim" >&2
-  exit 1
-fi
-
-version="$(sed -n 's/^ARG RECORDFLUX_VERSION=//p' "${share}/recordflux.Dockerfile" 2>/dev/null | head -n1)"
-version="${version:-latest}"
-image="zed-gnat/recordflux:${version}"
-platform="linux/amd64"
-
-if ! docker image inspect "${image}" >/dev/null 2>&1; then
-  if [ -f "${share}/recordflux-image.tar.gz" ]; then
-    echo "rflx: loading bundled RecordFlux image (first run only)..." >&2
-    gunzip -c "${share}/recordflux-image.tar.gz" | docker load >&2
-  elif [ -f "${share}/recordflux.Dockerfile" ]; then
-    echo "rflx: building ${image} from the vendored Dockerfile (first run; ~2 min)..." >&2
-    docker build --platform "${platform}" -q -t "${image}" \
-      -f "${share}/recordflux.Dockerfile" "${share}" >&2
-  else
-    echo "rflx: no image, tarball, or Dockerfile found in ${share}" >&2
-    exit 1
-  fi
-fi
-
-workdir="$(pwd)"
-exec docker run --rm --platform "${platform}" \
-  --user "$(id -u):$(id -g)" \
-  --env HOME=/tmp \
-  --volume "${workdir}:${workdir}" \
-  --workdir "${workdir}" \
-  "${image}" "$@"
-RFLX
+    # The rflx shim itself lives in its own file (docker/rflx) so edits to it
+    # don't bust the toolchain cache key, which hashes provision-toolchain.sh.
+    local shim_src="${dockerfile_src%/*}/rflx"
+    if [[ ! -f "${shim_src}" ]]; then
+        warn "rflx shim not found at ${shim_src}; rflx unavailable"
+        return 0
+    fi
+    cp "${shim_src}" "${TOOLCHAIN_DIR}/bin/rflx"
     chmod +x "${TOOLCHAIN_DIR}/bin/rflx"
     log "staged Docker-backed rflx (vendored image if present, else built on first use)"
 }
