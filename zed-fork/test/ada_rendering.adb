@@ -40,6 +40,16 @@ procedure Ada_Rendering is
       end case;
    end record;
 
+   --  Record with a fixed-point *field*. The scaling formatter must apply for
+   --  a Money-typed child of a record, not just for top-level locals. This is
+   --  exactly the case the QualType-keyed design (typedef-wrap of each
+   --  fixed-point base) was chosen to cover -- the field's ValueObject has no
+   --  Variable of its own, so a Variable-keyed lookup would miss it.
+   type Bill is record
+      Amount   : Money;
+      Quantity : Integer;
+   end record;
+
    --  Arrays -----------------------------------------------------------------
    type Int_Array is array (Positive range <>) of Integer;
 
@@ -67,13 +77,14 @@ procedure Ada_Rendering is
    Len     : Natural     := 10;           --  subtype of Integer
    P       : Point       := (X => 7, Y => 2.5);
    Sh      : Shape       := (Kind => Green, Tag => 1, G_Val => 2.5);
+   B       : Bill        := (Amount => 9.99, Quantity => 3);  --  nested fixed-point
    Arr     : Int_Array (1 .. 3) := (10, 20, 30);   --  1-based
    Arr5    : Int_Array (5 .. 7) := (50, 60, 70);   --  arbitrary lower bound
    Name    : String      := "Ada";                 --  constrained String
 
 begin
    pragma Inspection_Point
-     (Counter, Ratio, Col, St, Mask, BF, M, Len, P, Sh, Arr, Arr5, Name);
+     (Counter, Ratio, Col, St, Mask, BF, M, Len, P, Sh, B, Arr, Arr5, Name);
    Put_Line (Integer'Image (Counter));   --  bp_main
    Show (Name, Arr);
 end Ada_Rendering;
