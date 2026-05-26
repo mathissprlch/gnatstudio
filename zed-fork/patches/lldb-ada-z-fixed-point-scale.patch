@@ -70,7 +70,7 @@ index fe0323bf0..00409402c 100644
 +  if (!ct.IsValid())
 +    return std::nullopt;
 +  auto ts = ct.GetTypeSystem();
-+  auto *ts_ada = ts.dyn_cast_or_null<TypeSystemAda>();
++  auto ts_ada = ts.dyn_cast_or_null<TypeSystemAda>();
 +  if (!ts_ada)
 +    return std::nullopt;
 +  while (ct.IsValid()) {
@@ -90,9 +90,9 @@ index fe0323bf0..00409402c 100644
 +  auto scale = GetAdaFixedPointScale(valobj);
 +  if (!scale)
 +    return false;
-+  Status err;
-+  int64_t raw = valobj.GetValueAsSigned(0, &err);
-+  if (err.Fail())
++  bool success = false;
++  int64_t raw = valobj.GetValueAsSigned(0, &success);
++  if (!success)
 +    return false;
 +  double scaled = static_cast<double>(raw) *
 +                  std::pow(scale->decimal ? 10.0 : 2.0,
