@@ -1,0 +1,212 @@
+# M3: Ada synthetic-children formatters (start: non-character unconstrained
+# slices).
+#
+# AdaLanguage's existing summary formatters cover the leaf-render cases
+# (strings, scalars, fixed-point); rendering *expandable* structures like a
+# slice's elements requires lldb's SyntheticChildrenFrontEnd API. This patch
+# adds the infrastructure (an override of Language::GetHardcodedSynthetics in
+# AdaLanguage and the matching include) and the first user of it: a non-char
+# fat-pointer slice provider.
+#
+# A GNAT unconstrained array parameter (e.g. `Slice : Int_Array` inside the
+# `Show` procedure of test/ada_rendering.adb) is laid out at runtime as a
+# two-pointer fat pointer: P_ARRAY -> contiguous element storage, P_BOUNDS ->
+# {LB0, UB0}. The existing AdaStringSummaryProvider matches the same shape but
+# only when the element is a character; non-char fat pointers used to fall
+# through to the default record rendering, so the user saw the raw
+# `{P_ARRAY=..., P_BOUNDS=...}` struct instead of the actual elements.
+#
+# AdaSliceSyntheticFrontEnd reads the bounds on each stop (Update), then on
+# GetChildAtIndex it dereferences P_ARRAY + idx*element_size with the element
+# type so the pane shows `(LB) .. (UB)` as expandable children labelled with
+# the Ada-style index. Mirrors the StdlibCoroutineHandleSyntheticFrontEnd
+# pattern from the CPlusPlus plugin.
+#
+# Sorts after the other Ada patches (z- prefix) because it modifies
+# AdaLanguage.{h,cpp} created by lldb-ada-language-plugin.patch.
+diff --git a/lldb/source/Plugins/Language/Ada/AdaLanguage.cpp b/lldb/source/Plugins/Language/Ada/AdaLanguage.cpp
+index 5557d0be2..0fa44dcb6 100644
+--- a/lldb/source/Plugins/Language/Ada/AdaLanguage.cpp
++++ b/lldb/source/Plugins/Language/Ada/AdaLanguage.cpp
+@@ -13,6 +13,7 @@
+ #include "lldb/Core/ValueObject.h"
+ #include "lldb/DataFormatters/StringPrinter.h"
+ #include "lldb/DataFormatters/TypeSummary.h"
++#include "lldb/DataFormatters/TypeSynthetic.h"
+ #include "lldb/Symbol/CompilerType.h"
+ #include "lldb/Target/Process.h"
+ #include "lldb/Target/Target.h"
+@@ -228,6 +229,128 @@ bool AdaFixedPointSummaryProvider(ValueObject &valobj, Stream &stream,
+   return true;
+ }
+ 
++// Same fat-pointer shape as a String (P_ARRAY + P_BOUNDS), but with a
++// non-character element type. The String summary path renders it as a quoted
++// string; for everything else we want expandable indexed children, so we run
++// the synthetic-children provider below instead.
++bool IsAdaSliceFatPointer(ValueObject &valobj) {
++  ValueObjectSP array_sp = valobj.GetChildMemberWithName("P_ARRAY");
++  ValueObjectSP bounds_sp = valobj.GetChildMemberWithName("P_BOUNDS");
++  if (!array_sp || !bounds_sp)
++    return false;
++  CompilerType element;
++  if (!array_sp->GetCompilerType().GetPointeeType().IsArrayType(&element))
++    return false;
++  return !element.IsCharType();
++}
++
++// Synthetic children for a GNAT non-character unconstrained-array fat pointer.
++// Reads the P_BOUNDS to get the live [LB..UB] range and dereferences P_ARRAY
++// element-by-element so the Variables pane shows `(LB) .. (UB)` instead of the
++// raw {P_ARRAY, P_BOUNDS} struct. Mirrors the pattern of
++// StdlibCoroutineHandleSyntheticFrontEnd in the CPlusPlus plugin.
++class AdaSliceSyntheticFrontEnd : public SyntheticChildrenFrontEnd {
++public:
++  AdaSliceSyntheticFrontEnd(lldb::ValueObjectSP valobj_sp)
++      : SyntheticChildrenFrontEnd(*valobj_sp) {
++    if (valobj_sp)
++      Update();
++  }
++
++  ~AdaSliceSyntheticFrontEnd() override = default;
++
++  llvm::Expected<uint32_t> CalculateNumChildren() override {
++    if (m_ub < m_lb || m_element_size == 0)
++      return 0;
++    return static_cast<uint32_t>(m_ub - m_lb + 1);
++  }
++
++  lldb::ValueObjectSP GetChildAtIndex(uint32_t idx) override {
++    if (m_element_size == 0)
++      return lldb::ValueObjectSP();
++    int64_t ada_idx = m_lb + static_cast<int64_t>(idx);
++    if (ada_idx > m_ub)
++      return lldb::ValueObjectSP();
++    lldb::addr_t elem_addr =
++        m_base_addr + static_cast<lldb::addr_t>(idx) * m_element_size;
++    std::string name = "(" + std::to_string(ada_idx) + ")";
++    auto &exe_ctx = m_backend.GetExecutionContextRef();
++    return CreateValueObjectFromAddress(name, elem_addr, exe_ctx,
++                                        m_element_type);
++  }
++
++  lldb::ChildCacheState Update() override {
++    m_base_addr = 0;
++    m_lb = 0;
++    m_ub = -1; // empty by default
++    m_element_size = 0;
++    m_element_type = CompilerType();
++
++    ValueObjectSP array_sp = m_backend.GetChildMemberWithName("P_ARRAY");
++    ValueObjectSP bounds_sp = m_backend.GetChildMemberWithName("P_BOUNDS");
++    if (!array_sp || !bounds_sp)
++      return lldb::ChildCacheState::eRefetch;
++
++    lldb::addr_t addr =
++        array_sp->GetValueAsUnsigned(LLDB_INVALID_ADDRESS);
++    if (addr == 0 || addr == LLDB_INVALID_ADDRESS)
++      return lldb::ChildCacheState::eRefetch;
++    m_base_addr = addr;
++
++    // P_ARRAY's pointee is the underlying array; its element is what we render.
++    CompilerType pointee = array_sp->GetCompilerType().GetPointeeType();
++    if (!pointee.IsArrayType(&m_element_type))
++      return lldb::ChildCacheState::eRefetch;
++
++    lldb::TargetSP target_sp = m_backend.GetTargetSP();
++    auto byte_size = m_element_type.GetByteSize(target_sp.get());
++    if (!byte_size || *byte_size == 0)
++      return lldb::ChildCacheState::eRefetch;
++    m_element_size = *byte_size;
++
++    Status err;
++    ValueObjectSP bounds = bounds_sp->Dereference(err);
++    if (!bounds || err.Fail())
++      return lldb::ChildCacheState::eRefetch;
++    ValueObjectSP lb_sp = bounds->GetChildMemberWithName("LB0");
++    ValueObjectSP ub_sp = bounds->GetChildMemberWithName("UB0");
++    if (!lb_sp || !ub_sp)
++      return lldb::ChildCacheState::eRefetch;
++
++    m_lb = lb_sp->GetValueAsSigned(1);
++    m_ub = ub_sp->GetValueAsSigned(0);
++    return lldb::ChildCacheState::eRefetch;
++  }
++
++  bool MightHaveChildren() override { return true; }
++
++  size_t GetIndexOfChildWithName(ConstString name) override {
++    llvm::StringRef s = name.GetStringRef();
++    if (!s.starts_with("(") || !s.ends_with(")"))
++      return UINT32_MAX;
++    llvm::StringRef inner = s.substr(1, s.size() - 2);
++    int64_t n = 0;
++    if (inner.getAsInteger(10, n))
++      return UINT32_MAX;
++    if (n < m_lb || n > m_ub)
++      return UINT32_MAX;
++    return static_cast<size_t>(n - m_lb);
++  }
++
++private:
++  lldb::addr_t m_base_addr = 0;
++  int64_t m_lb = 0;
++  int64_t m_ub = -1;
++  uint64_t m_element_size = 0;
++  CompilerType m_element_type;
++};
++
++SyntheticChildrenFrontEnd *
++AdaSliceSyntheticFrontEndCreator(CXXSyntheticChildren *,
++                                 lldb::ValueObjectSP valobj_sp) {
++  return valobj_sp ? new AdaSliceSyntheticFrontEnd(valobj_sp) : nullptr;
++}
++
+ } // namespace
+ 
+ HardcodedFormatters::HardcodedSummaryFinder
+@@ -278,3 +401,30 @@ AdaLanguage::GetHardcodedSummaries() {
+ 
+   return g_formatters;
+ }
++
++HardcodedFormatters::HardcodedSyntheticFinder
++AdaLanguage::GetHardcodedSynthetics() {
++  static llvm::once_flag g_initialize;
++  static HardcodedFormatters::HardcodedSyntheticFinder g_formatters;
++
++  llvm::call_once(g_initialize, []() -> void {
++    g_formatters.push_back(
++        [](ValueObject &valobj, lldb::DynamicValueType,
++           FormatManager &) -> SyntheticChildren::SharedPointer {
++          static CXXSyntheticChildren::SharedPointer formatter_sp(
++              new CXXSyntheticChildren(
++                  SyntheticChildren::Flags()
++                      .SetCascades(true)
++                      .SetSkipPointers(true)
++                      .SetSkipReferences(true)
++                      .SetNonCacheable(true),
++                  "Ada slice (non-char fat pointer) synthetic children",
++                  AdaSliceSyntheticFrontEndCreator));
++          if (IsAdaSliceFatPointer(valobj))
++            return formatter_sp;
++          return nullptr;
++        });
++  });
++
++  return g_formatters;
++}
+diff --git a/lldb/source/Plugins/Language/Ada/AdaLanguage.h b/lldb/source/Plugins/Language/Ada/AdaLanguage.h
+index 7fdbdf855..511fb8440 100644
+--- a/lldb/source/Plugins/Language/Ada/AdaLanguage.h
++++ b/lldb/source/Plugins/Language/Ada/AdaLanguage.h
+@@ -29,6 +29,9 @@ public:
+ 
+   HardcodedFormatters::HardcodedSummaryFinder GetHardcodedSummaries() override;
+ 
++  HardcodedFormatters::HardcodedSyntheticFinder
++  GetHardcodedSynthetics() override;
++
+   // Static Functions
+   static void Initialize();
+ 
