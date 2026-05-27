@@ -1,26 +1,15 @@
 [
   {
-    "label": "Ada: gprbuild",
-    "command": "bash",
-    "args": [
-      "-euc",
-      "f=$(ls *.gpr 2>/dev/null | head -1); if [ -z \"$f\" ]; then cat > main.gpr <<'EOF'\nproject Main is\n   for Source_Dirs use (\".\");\n   for Object_Dir use \"obj\";\n   for Main use (\"main.adb\");\nend Main;\nEOF\nf=main.gpr; fi; pkill -f \"./main\" 2>/dev/null || true; find obj -maxdepth 2 -name '*.lock*' -delete 2>/dev/null || true; gprbuild -P \"$f\""
-    ],
+    "label": "Ada: build",
+    "command": "zed-gnat-build",
     "tags": ["ada_main"],
-    "use_new_terminal": false,
-    "allow_concurrent_runs": false,
     "reveal": "always"
   },
   {
-    "label": "Ada: gprbuild & run",
-    "command": "bash",
-    "args": [
-      "-euc",
-      "f=$(ls *.gpr 2>/dev/null | head -1); if [ -z \"$f\" ]; then cat > main.gpr <<'EOF'\nproject Main is\n   for Source_Dirs use (\".\");\n   for Object_Dir use \"obj\";\n   for Main use (\"main.adb\");\nend Main;\nEOF\nf=main.gpr; fi; pkill -f \"./main\" 2>/dev/null || true; find obj -maxdepth 2 -name '*.lock*' -delete 2>/dev/null || true; gprbuild -P \"$f\" && exec ./main"
-    ],
+    "label": "Ada: build & run",
+    "command": "zed-gnat-run",
     "tags": ["ada_main"],
     "use_new_terminal": false,
-    "allow_concurrent_runs": false,
     "reveal": "always"
   }
 ]

@@ -72,6 +72,20 @@ install_recordflux() {
     cp "${shim_src}" "${TOOLCHAIN_DIR}/bin/rflx"
     chmod +x "${TOOLCHAIN_DIR}/bin/rflx"
     log "staged Docker-backed rflx (vendored image if present, else built on first use)"
+
+    # Zed Ada runnable/task helpers: small wrappers behind the extension's
+    # tasks.json / debug.json so the JSON stays one command per task instead of
+    # an embedded heredoc. Same vendor-from-repo pattern as the rflx shim.
+    local helper_dir="${dockerfile_src%/docker/*}/scripts"
+    for helper in zed-gnat-build zed-gnat-run; do
+        if [[ -f "${helper_dir}/${helper}" ]]; then
+            cp "${helper_dir}/${helper}" "${TOOLCHAIN_DIR}/bin/${helper}"
+            chmod +x "${TOOLCHAIN_DIR}/bin/${helper}"
+        else
+            warn "${helper} not found at ${helper_dir}/${helper}"
+        fi
+    done
+    log "staged zed-gnat-{build,run} helpers"
 }
 
 # Bundle the codelldb DAP adapter so the GNAT/codelldb debug scenarios can

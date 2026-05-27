@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Build the Ada project in the current working directory. Designed to be the
+# command behind Zed's Ada build/run/debug runnables and tasks, so the
+# tasks.json / debug.json stays a single field instead of an embedded heredoc.
+#
+# What it does, in order:
+#   1. Discover (or auto-create) a GNAT project file. A bare `main.adb` with no
+#      .gpr in the directory gets a minimal `main.gpr` written so gprbuild has
+#      something to consume.
+#   2. Free the linker: pkill any running `./main` so a stale debug session
+#      doesn't hold the output file open and hang relink.
+#   3. Sweep gprbuild lock files (`obj/*.lock*`) left by an interrupted build.
+#   4. exec gprbuild on the project. Any additional args pass straight through.
+set -euo pipefail
+
+gpr=$(ls *.gpr 2>/dev/null | head -n1 || true)
+if [[ -z "${gpr}" ]]; then
+    cat > main.gpr <<'GPR'
+project Main is
+   for Source_Dirs use (".");
+   for Object_Dir use "obj";
+   for Main use ("main.adb");
+end Main;
+GPR
+    gpr=main.gpr
+    echo "zed-gnat-build: wrote default ${gpr}"
+fi
+
+pkill -f "./main" 2>/dev/null || true
+find obj -maxdepth 2 -name '*.lock*' -delete 2>/dev/null || true
+
+exec gprbuild -P "${gpr}" "$@"
