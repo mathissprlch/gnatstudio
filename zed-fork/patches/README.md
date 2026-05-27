@@ -62,6 +62,22 @@ of the same size, so the value renders (as its raw stored integer); a follow-up
 `AdaLanguage` formatter reads the scale and prints the real (scaled) value. These
 are standard DWARF encodings, so resolving them is safe for non-Ada units too.
 
+## `lldb-ada-z-synthetics.patch` (M3)
+
+Adds the `SyntheticChildrenFrontEnd` infrastructure to `AdaLanguage` and its
+first user: a synthetic-children provider for non-character unconstrained-array
+fat pointers (Ada slices). A GNAT unconstrained array parameter has the same
+two-pointer shape as a String fat pointer (`P_ARRAY` + `P_BOUNDS`), but with a
+non-char element type — the existing summary path rendered chars only, so
+non-char slices used to show as the raw `{P_ARRAY, P_BOUNDS}` struct. The
+synthetic provider reads the bounds at each stop and dereferences `P_ARRAY +
+idx*element_size` for each child, so the Variables pane shows `(LB) .. (UB)` as
+expandable Ada-indexed children. Mirrors the
+`StdlibCoroutineHandleSyntheticFrontEnd` pattern in the `CPlusPlus` plugin. The
+infrastructure (`AdaLanguage::GetHardcodedSynthetics`, `TypeSynthetic.h`
+include) is the foundation that 1-based array indexing and variant-alternative
+hiding will plug into next.
+
 ## `lldb-ada-z-fixed-point-scale.patch` (M2)
 
 Builds on `lldb-ada-fixed-point.patch` to render Ada fixed-point with the
