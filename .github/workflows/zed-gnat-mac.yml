@@ -40,6 +40,11 @@ permissions:
 env:
   # Keep in sync with LLVM_REF in zed-fork/scripts/build-lldb-ada.sh.
   LLVM_REF: cd708029e0b2869e80abe31ddb175f7c35361f90
+  # sccache server default is to exit after 10 min idle, which would lose its
+  # in-memory hit/miss counters before the post-build stats step queries them
+  # (and the auto-restarted server then reports 0). Keep it alive for the
+  # whole run.
+  SCCACHE_IDLE_TIMEOUT: "86400"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -345,10 +350,25 @@ jobs:
         run: |
           mkdir -p build
           set -o pipefail
+          # Capture sccache state at both ends so we can tell whether cargo
+          # actually went through sccache. The downstream "Report sccache stats
+          # to PR" step queries a possibly-restarted server (which then reports
+          # 0); the snapshot we save here is the in-build server's own counters.
+          echo "::group::sccache before make app"
+          echo "RUSTC_WRAPPER='${RUSTC_WRAPPER:-unset}'"
+          sccache --show-stats 2>&1 | head -6 || true
+          echo "::endgroup::"
           # bundle-mac.sh already tolerates upstream Zed's flaky, discarded DMG
           # step (hdiutil "Resource busy") and keeps the toolchain-injected .app,
           # which is the only thing we ship.
           make app 2>&1 | tee -a "$BUILD_LOG"
+          {
+            echo "RUSTC_WRAPPER='${RUSTC_WRAPPER:-unset}'"
+            sccache --show-stats 2>&1 || echo "(sccache --show-stats failed)"
+          } > /tmp/sccache-final.txt
+          echo "::group::sccache after make app (snapshot in /tmp/sccache-final.txt)"
+          cat /tmp/sccache-final.txt
+          echo "::endgroup::"
 
       - name: sccache stats
         if: always()
@@ -374,9 +394,17 @@ jobs:
             echo "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
             echo "RUSTC_WRAPPER: \`${RUSTC_WRAPPER:-(unset -- sccache disabled this run)}\`"
             echo
+            echo "**Stats from this step (may be a fresh server if the build's died):**"
             echo '```'
             sccache --show-stats 2>&1 | head -40 || echo "(sccache not available)"
             echo '```'
+            if [[ -f /tmp/sccache-final.txt ]]; then
+              echo
+              echo "**Stats captured *inside* build_app (real in-build counters):**"
+              echo '```'
+              head -40 /tmp/sccache-final.txt
+              echo '```'
+            fi
             if [[ -z "${RUSTC_WRAPPER:-}" && -s /tmp/sccache-probe.log ]]; then
               echo
               echo "**Probe failure log (why sccache disabled itself):**"
