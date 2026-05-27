@@ -327,9 +327,10 @@ jobs:
           test -x "$DEST/extension/adapter/codelldb"
           echo "patched codelldb injected into $DEST"
 
-      # Stage the rflx shim + RecordFlux Dockerfile fresh from the repo on
-      # every run, so cache-restored toolchains pick up shim/Dockerfile edits
-      # without busting the (very expensive) GNAT toolchain cache key.
+      # Stage the rflx shim, RecordFlux Dockerfile, and zed-gnat-{build,run}
+      # helpers fresh from the repo on every run, so cache-restored toolchains
+      # pick up edits without busting the (very expensive) GNAT toolchain cache
+      # key.
       - name: Stage RecordFlux shim
         run: |
           set -euo pipefail
@@ -337,7 +338,10 @@ jobs:
           cp zed-fork/docker/rflx "$TOOLCHAIN_DIR/bin/rflx"
           chmod +x "$TOOLCHAIN_DIR/bin/rflx"
           cp zed-fork/docker/recordflux.Dockerfile "$TOOLCHAIN_DIR/share/recordflux/recordflux.Dockerfile"
-          echo "staged RecordFlux shim + Dockerfile"
+          cp zed-fork/scripts/zed-gnat-build "$TOOLCHAIN_DIR/bin/zed-gnat-build"
+          cp zed-fork/scripts/zed-gnat-run "$TOOLCHAIN_DIR/bin/zed-gnat-run"
+          chmod +x "$TOOLCHAIN_DIR/bin/zed-gnat-build" "$TOOLCHAIN_DIR/bin/zed-gnat-run"
+          echo "staged RecordFlux shim + Dockerfile + zed-gnat-{build,run}"
 
       - name: Build Zed GNAT.app
         id: build_app

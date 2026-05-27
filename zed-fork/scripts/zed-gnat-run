@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Build the Ada project (via zed-gnat-build), then exec the produced binary.
+# Default binary name follows the auto-created main.gpr (./main); override by
+# passing an explicit `MAIN=other_binary` env var.
+set -euo pipefail
+
+here="$(cd "$(dirname "$0")" && pwd)"
+"${here}/zed-gnat-build"
+
+exec "./${MAIN:-main}" "$@"
