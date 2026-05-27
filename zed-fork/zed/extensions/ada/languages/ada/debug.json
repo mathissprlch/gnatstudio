@@ -9,6 +9,6 @@
       "label": "Ada: build",
       "command": "zed-gnat-build"
     },
-    "tags": ["ada_main"]
+    "tags": ["ada-main"]
   }
 ]
