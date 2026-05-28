@@ -353,19 +353,19 @@ jobs:
         id: prebuild_ada_ext
         working-directory: zed-fork/zed
         run: |
-          set -euo pipefail
-          mkdir -p "${RUNNER_TEMP}/ada-ext-scratch"
-          rm -rf "${RUNNER_TEMP}/ada-extension"
-          echo "::group::cargo build -p extension_cli --release"
-          cargo build --release -p extension_cli
-          echo "::endgroup::"
-          echo "::group::zed-extension --source-dir extensions/ada"
-          RUST_LOG=info ./target/release/zed-extension \
-            --source-dir extensions/ada \
-            --output-dir "${RUNNER_TEMP}/ada-extension" \
-            --scratch-dir "${RUNNER_TEMP}/ada-ext-scratch"
-          echo "::endgroup::"
-          ls -la "${RUNNER_TEMP}/ada-extension"
+          set -uo pipefail
+          mkdir -p "$(dirname "$BUILD_LOG")"
+          {
+            set -ex
+            mkdir -p "${RUNNER_TEMP}/ada-ext-scratch"
+            rm -rf "${RUNNER_TEMP}/ada-extension"
+            cargo build --release -p extension_cli
+            RUST_LOG=info ./target/release/zed-extension \
+              --source-dir extensions/ada \
+              --output-dir "${RUNNER_TEMP}/ada-extension" \
+              --scratch-dir "${RUNNER_TEMP}/ada-ext-scratch"
+            ls -la "${RUNNER_TEMP}/ada-extension"
+          } 2>&1 | tee -a "$BUILD_LOG"
 
       - name: Build Zed GNAT.app
         id: build_app
