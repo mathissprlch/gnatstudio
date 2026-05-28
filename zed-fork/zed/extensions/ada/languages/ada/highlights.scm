@@ -83,8 +83,6 @@
   "mod"
   "rem"
   "abs"
-  "and then"
-  "or else"
 ] @keyword.operator
 
 ; --- Operators ---------------------------------------------------------------
