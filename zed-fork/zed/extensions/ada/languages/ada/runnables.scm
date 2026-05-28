@@ -5,11 +5,12 @@
 ;   - @run marks the lens anchor (positioned on the subprogram's name).
 ;   - (#set! tag ada-main) sets the runnable tag matched by tasks.
 ;
-; The Ada grammar (briot/tree-sitter-ada) -- same shape used by highlights.scm:
-;   (subprogram_body (subprogram_specification name: (_) @function))
+; The briot/tree-sitter-ada grammar exposes procedure_specification and
+; function_specification as separate node types -- there is no
+; subprogram_specification umbrella. Match either inside subprogram_body.
 (
   (subprogram_body
-    (subprogram_specification
-      name: (_) @run))
+    [(procedure_specification name: (_) @run)
+     (function_specification  name: (_) @run)])
   (#set! tag ada-main)
 )
