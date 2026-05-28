@@ -1,156 +1,196 @@
-; Ada syntax highlighting queries for tree-sitter-ada (briot/brownts grammar).
-;
-; The grammar exposes most of Ada 2022. We map node kinds to Zed's standard
-; highlight scopes. SPARK aspects (Pre, Post, Loop_Invariant, ...) flow through
-; the same paths since they're aspect_clauses on the regular declarations.
-
-; --- Keywords ----------------------------------------------------------------
+;; highlight queries.
+;; See the syntax at https://tree-sitter.github.io/tree-sitter/using-parsers#pattern-matching-with-queries
+;; See also https://github.com/nvim-treesitter/nvim-treesitter/blob/master/CONTRIBUTING.md#parser-configurations
+;; for a list of recommended @ tags, though not all of them have matching
+;; highlights in neovim.
 
 [
-  "abstract"
-  "accept"
-  "access"
-  "aliased"
-  "all"
-  "array"
-  "at"
-  "begin"
-  "body"
-  "case"
-  "constant"
-  "declare"
-  "delay"
-  "delta"
-  "digits"
-  "do"
-  "else"
-  "elsif"
-  "end"
-  "entry"
-  "exception"
-  "exit"
-  "for"
-  "function"
-  "generic"
-  "goto"
-  "if"
-  "in"
-  "interface"
-  "is"
-  "limited"
-  "loop"
-  "new"
-  "not"
-  "null"
-  "of"
-  "others"
-  "out"
-  "overriding"
-  "package"
-  "pragma"
-  "private"
-  "procedure"
-  "protected"
-  "raise"
-  "range"
-  "record"
-  "renames"
-  "requeue"
-  "return"
-  "reverse"
-  "select"
-  "separate"
-  "some"
-  "subtype"
-  "synchronized"
-  "tagged"
-  "task"
-  "terminate"
-  "then"
-  "type"
-  "until"
-  "use"
-  "when"
-  "while"
-  "with"
+   "abort"
+   "abs"
+   "abstract"
+   "accept"
+   "access"
+   "all"
+   "array"
+   "at"
+   "begin"
+   "declare"
+   "delay"
+   "delta"
+   "digits"
+   "do"
+   "end"
+   "entry"
+   "exit"
+   "generic"
+   "interface"
+   "is"
+   "limited"
+   "null"
+   "of"
+   "others"
+   "out"
+   "pragma"
+   "private"
+   "range"
+   "synchronized"
+   "tagged"
+   "task"
+   "terminate"
+   "until"
+   "when"
 ] @keyword
-
-; Operators that are spelled as words.
 [
-  "and"
-  "or"
-  "xor"
-  "mod"
-  "rem"
-  "abs"
+   "aliased"
+   "constant"
+   "renames"
+] @storageclass
+[
+   "mod"
+   "new"
+   "protected"
+   "record"
+   "subtype"
+   "type"
+] @keyword.type
+[
+   "with"
+   "use"
+] @include
+[
+   "body"
+   "function"
+   "overriding"
+   "procedure"
+   "package"
+   "separate"
+] @keyword.function
+[
+   "and"
+   "in"
+   "not"
+   "or"
+   "xor"
 ] @keyword.operator
-
-; --- Operators ---------------------------------------------------------------
-
 [
-  ":="
-  "=>"
-  ".."
-  "**"
-  "<<"
-  ">>"
-  "<>"
-  "&"
-  "+"
-  "-"
-  "*"
-  "/"
-  "<"
-  "<="
-  ">"
-  ">="
-  "="
-  "/="
-  ":"
-] @operator
-
-; --- Punctuation -------------------------------------------------------------
-
-[ "(" ")" ] @punctuation.bracket
-[ "," ";" "'" ] @punctuation.delimiter
-
-; --- Literals ----------------------------------------------------------------
-
+   "while"
+   "loop"
+   "for"
+   "parallel"
+   "reverse"
+   "some"
+] @repeat
+[
+   "return"
+] @keyword.return
+[
+   "case"
+   "if"
+   "else"
+   "then"
+   "elsif"
+   "select"
+] @conditional
+[
+   "exception"
+   "raise"
+] @exception
+(comment) @comment @spell
 (string_literal) @string
 (character_literal) @string
 (numeric_literal) @number
-(comment) @comment
 
-; --- Identifiers -------------------------------------------------------------
+;; Highlight the name of subprograms
+(procedure_specification name: (_) @function)
+(function_specification name: (_) @function)
+(package_declaration name: (_) @function)
+(package_body name: (_) @function)
+(generic_instantiation name: (_) @function)
+(entry_declaration . (identifier) @function)
 
-(identifier) @variable
+;; Some keywords should take different categories depending on the context
+(use_clause "use"  @include "type" @include)
+(with_clause "private" @include)
+(with_clause "limited" @include)
+(use_clause (_) @namespace)
+(with_clause (_) @namespace)
 
-; Type references — every `Foo.Bar` in a subtype_mark slot.
-(subtype_indication
-  (subtype_mark) @type)
+(loop_statement "end" @keyword.repeat)
+(if_statement "end" @conditional)
+(loop_parameter_specification "in" @keyword.repeat)
+(loop_parameter_specification "in" @keyword.repeat)
+(iterator_specification ["in" "of"] @keyword.repeat)
+(range_attribute_designator "range" @keyword.repeat)
 
-; Subprogram declarations and bodies.
-(subprogram_specification
-  name: (_) @function)
-(subprogram_body
-  (subprogram_specification name: (_) @function))
+(raise_statement "with" @exception)
 
-; Package names.
-(package_declaration
-  name: (_) @namespace)
-(package_body
-  name: (_) @namespace)
-(generic_package_declaration
-  name: (_) @namespace)
+(gnatprep_declarative_if_statement)  @preproc
+(gnatprep_if_statement)              @preproc
+(gnatprep_identifier)                @preproc
 
-; Type declarations.
-(full_type_declaration
-  name: (_) @type)
-(subtype_declaration
-  name: (_) @type)
+(subprogram_declaration "is" @keyword.function "abstract"  @keyword.function)
+(aspect_specification "with" @keyword.function)
 
-; Pragmas and aspects (SPARK contracts, conventions, etc.) -- highlight the
-; name as an attribute, which most themes render distinctly.
-(pragma_g
-  name: (_) @attribute)
-(aspect_mark) @attribute
+(full_type_declaration "is" @keyword.type)
+(subtype_declaration "is" @keyword.type)
+(record_definition "end" @keyword.type)
+(full_type_declaration (_ "access" @keyword.type))
+(array_type_definition "array" @keyword.type "of" @keyword.type)
+(access_to_object_definition "access" @keyword.type)
+(access_to_object_definition "access" @keyword.type
+   [
+      (general_access_modifier "constant" @keyword.type)
+      (general_access_modifier "all" @keyword.type)
+   ]
+)
+(range_constraint "range" @keyword.type)
+(signed_integer_type_definition "range" @keyword.type)
+(index_subtype_definition "range" @keyword.type)
+(record_type_definition "abstract" @keyword.type)
+(record_type_definition "tagged" @keyword.type)
+(record_type_definition "limited" @keyword.type)
+(record_type_definition (record_definition "null" @keyword.type))
+(private_type_declaration "is" @keyword.type "private" @keyword.type)
+(private_type_declaration "tagged" @keyword.type)
+(private_type_declaration "limited" @keyword.type)
+(task_type_declaration "task" @keyword.type "is" @keyword.type)
+
+;; Gray the body of expression functions
+(expression_function_declaration
+   (function_specification)
+   "is"
+   (_) @attribute
+)
+(subprogram_declaration (aspect_specification) @attribute)
+
+;; Highlight full subprogram specifications
+;(subprogram_body
+;    [
+;       (procedure_specification)
+;       (function_specification)
+;    ] @function.spec
+;)
+
+((comment) @comment.documentation
+  . [
+      (entry_declaration)
+      (subprogram_declaration)
+      (parameter_specification)
+    ])
+
+(compilation_unit 
+  . (comment) @comment.documentation)
+
+(component_list
+  (component_declaration)
+    . (comment) @comment.documentation)
+
+(enumeration_type_definition 
+  (identifier)
+  . (comment) @comment.documentation)
+
+;; Highlight errors in red. This is not very useful in practice, as text will
+;; be highlighted as user types, and the error could be elsewhere in the code.
+;; This also requires defining    :hi @error guifg=Red    for instance.
+(ERROR) @error
+
