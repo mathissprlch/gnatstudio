@@ -164,7 +164,14 @@ impl zed::Extension for AdaExtension {
                     "onTypeFormatting": { "indentOnly": false },
                     "foldComments": true,
                     "useGnatformat": true,
-                    "useCompletionSnippets": true
+                    "useCompletionSnippets": true,
+                    // Auto-import: when a completion is accepted for a symbol that
+                    // isn't visible in scope, ALS inserts the missing `with` clause
+                    // (and a prefix if needed) via additionalTextEdits. When several
+                    // packages export the name, ALS returns one completion entry per
+                    // candidate -- each carrying its own with-clause edit -- so the
+                    // completion menu itself is the disambiguation picker.
+                    "insertWithClauses": true
                 }
             }),
             "gnatprove_proof" => serde_json::json!({
