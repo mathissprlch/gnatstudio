@@ -229,7 +229,9 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}, wasm32-wasip1
+          targets: |
+            ${{ matrix.target }}
+            wasm32-wasip1
 
       - name: Set up sccache
         uses: mozilla-actions/sccache-action@v0.0.10
@@ -348,16 +350,21 @@ jobs:
       # the wasm32 target. The launcher first-installs this into Zed's
       # extensions dir on first run, superseding any marketplace "Ada".
       - name: Prebuild Ada extension
+        id: prebuild_ada_ext
         working-directory: zed-fork/zed
         run: |
           set -euo pipefail
           mkdir -p "${RUNNER_TEMP}/ada-ext-scratch"
           rm -rf "${RUNNER_TEMP}/ada-extension"
+          echo "::group::cargo build -p extension_cli --release"
           cargo build --release -p extension_cli
-          ./target/release/zed-extension \
+          echo "::endgroup::"
+          echo "::group::zed-extension --source-dir extensions/ada"
+          RUST_LOG=info ./target/release/zed-extension \
             --source-dir extensions/ada \
             --output-dir "${RUNNER_TEMP}/ada-extension" \
             --scratch-dir "${RUNNER_TEMP}/ada-ext-scratch"
+          echo "::endgroup::"
           ls -la "${RUNNER_TEMP}/ada-extension"
 
       - name: Build Zed GNAT.app
@@ -449,7 +456,7 @@ jobs:
           fi
 
       - name: Surface build failure
-        if: failure() && steps.build_app.conclusion == 'failure'
+        if: failure()
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -459,7 +466,8 @@ jobs:
           {
             echo "### CI failure — \`${{ matrix.target }}\` (${{ github.event_name }})"
             echo
-            echo "Step: \`Build Zed GNAT.app\`"
+            # Which step failed -- helps when something pre-build_app blew up.
+            echo "First failing step: \`${{ steps.prebuild_ada_ext.outcome == 'failure' && 'Prebuild Ada extension' || (steps.build_app.outcome == 'failure' && 'Build Zed GNAT.app' || 'unknown') }}\`"
             echo "Run:  ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
             echo "Commit: \`${{ github.sha }}\`"
             echo
