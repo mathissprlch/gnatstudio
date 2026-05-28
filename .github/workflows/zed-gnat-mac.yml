@@ -229,7 +229,7 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          targets: ${{ matrix.target }}, wasm32-wasip1
 
       - name: Set up sccache
         uses: mozilla-actions/sccache-action@v0.0.10
@@ -343,6 +343,23 @@ jobs:
           chmod +x "$TOOLCHAIN_DIR/bin/zed-gnat-build" "$TOOLCHAIN_DIR/bin/zed-gnat-run"
           echo "staged RecordFlux shim + Dockerfile + zed-gnat-{build,run}"
 
+      # Prebuild the Ada/SPARK extension once on CI so the .app ships it
+      # already-compiled (WASM + grammar). Users' machines don't need Cargo or
+      # the wasm32 target. The launcher first-installs this into Zed's
+      # extensions dir on first run, superseding any marketplace "Ada".
+      - name: Prebuild Ada extension
+        working-directory: zed-fork/zed
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/ada-ext-scratch"
+          rm -rf "${RUNNER_TEMP}/ada-extension"
+          cargo build --release -p extension_cli
+          ./target/release/zed-extension \
+            --source-dir extensions/ada \
+            --output-dir "${RUNNER_TEMP}/ada-extension" \
+            --scratch-dir "${RUNNER_TEMP}/ada-ext-scratch"
+          ls -la "${RUNNER_TEMP}/ada-extension"
+
       - name: Build Zed GNAT.app
         id: build_app
         working-directory: zed-fork
@@ -351,6 +368,8 @@ jobs:
           APPLE_ID:         ${{ secrets.APPLE_ID }}
           APPLE_PASS:       ${{ secrets.APPLE_APP_PASSWORD }}
           APPLE_TEAM_ID:    ${{ secrets.APPLE_TEAM_ID }}
+          ZED_GNAT_ADA_EXTENSION_DIR: ${{ runner.temp }}/ada-extension
+          ZED_GNAT_BUILD_STAMP: ${{ github.sha }}
         run: |
           mkdir -p build
           set -o pipefail

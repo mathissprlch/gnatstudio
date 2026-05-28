@@ -106,6 +106,23 @@ else
     cp -a "${TOOLCHAIN_DIR}" "${TOOLS_DIR}"
 fi
 
+# Prebuilt Ada extension (built upstream of bundle-mac.sh, e.g. by the CI step
+# that runs `zed-extension` against extensions/ada). Carry it into the .app so
+# the launcher can pin-install it on first run -- avoids the local-Cargo build
+# fragility that broke highlighting when users `zed: install dev extension`'d
+# our source tree by hand. A build stamp lets the launcher detect upgrades
+# without us having to bump the extension's manifest version on every commit.
+if [[ -n "${ZED_GNAT_ADA_EXTENSION_DIR:-}" && -d "${ZED_GNAT_ADA_EXTENSION_DIR}" ]]; then
+    EXT_DIR="${RESOURCES}/extensions/ada"
+    echo "Bundling prebuilt Ada extension from ${ZED_GNAT_ADA_EXTENSION_DIR}"
+    mkdir -p "$(dirname "${EXT_DIR}")"
+    rm -rf "${EXT_DIR}"
+    cp -a "${ZED_GNAT_ADA_EXTENSION_DIR}" "${EXT_DIR}"
+    printf '%s\n' "${ZED_GNAT_BUILD_STAMP:-unknown}" > "${EXT_DIR}/.zed-gnat-build-stamp"
+else
+    echo "ZED_GNAT_ADA_EXTENSION_DIR not set or missing -- skipping Ada extension bundling"
+fi
+
 # Launcher: wraps the real Zed binary so the bundled tools win on PATH.
 MACOS_DIR="${APP}/Contents/MacOS"
 ORIGINAL="${MACOS_DIR}/zed"
@@ -132,6 +149,34 @@ fi
 
 if [[ -d "${APP_RESOURCES}/tools/python" ]]; then
     export PYTHONPATH="${APP_RESOURCES}/tools/python:${PYTHONPATH:-}"
+fi
+
+# Pin our prebuilt Ada extension into Zed's installed-extensions dir if the
+# bundled build stamp differs from the installed one (first run, upgrade, or
+# the marketplace "Ada" is currently installed). We REPLACE the installed
+# `ada` dir wholesale because Zed registers languages by name -- two
+# extensions both providing "Ada" would clobber each other by load order
+# (verified in extension_host.rs: BTreeMap::insert with no dedup).
+# Failures are logged but never block launch -- the user can fall back to
+# manual extension management. Index removal forces Zed to rescan installed/.
+BUNDLED_EXT="${APP_RESOURCES}/extensions/ada"
+ZED_USER_DATA="${HOME}/Library/Application Support/Zed"
+INSTALLED_EXT="${ZED_USER_DATA}/extensions/installed/ada"
+if [[ -f "${BUNDLED_EXT}/extension.toml" ]]; then
+    bundled_stamp="$(cat "${BUNDLED_EXT}/.zed-gnat-build-stamp" 2>/dev/null || echo unknown)"
+    installed_stamp="$(cat "${INSTALLED_EXT}/.zed-gnat-build-stamp" 2>/dev/null || echo missing)"
+    if [[ "${bundled_stamp}" != "${installed_stamp}" ]]; then
+        echo "Zed GNAT: installing bundled Ada extension (stamp ${bundled_stamp})" >&2
+        mkdir -p "${ZED_USER_DATA}/extensions/installed"
+        rm -rf "${INSTALLED_EXT}"
+        if cp -a "${BUNDLED_EXT}" "${INSTALLED_EXT}"; then
+            # Drop the index so Zed rebuilds it on next launch (otherwise a
+            # cached marketplace entry under the same id keeps winning).
+            rm -f "${ZED_USER_DATA}/extensions/index.json"
+        else
+            echo "Zed GNAT: failed to install bundled Ada extension; continuing without" >&2
+        fi
+    fi
 fi
 
 exec "${HERE}/zed-real" "$@"
