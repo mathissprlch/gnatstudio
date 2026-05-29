@@ -1,0 +1,45 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "GNAT (gdb) debug configuration",
+  "description": "Launch or attach to an Ada/SPARK program using gdb's native DAP mode. Requires gdb >= 14.",
+  "type": "object",
+  "required": ["request"],
+  "properties": {
+    "request": {
+      "type": "string",
+      "enum": ["launch", "attach"],
+      "default": "launch"
+    },
+    "program": {
+      "type": "string",
+      "description": "Absolute path to the executable produced by gprbuild. The `${ZED_GNAT_MAIN}` substitution resolves to the main attribute of the active .gpr."
+    },
+    "args": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": []
+    },
+    "cwd": {
+      "type": "string",
+      "default": "${ZED_WORKTREE_ROOT}"
+    },
+    "env": {
+      "type": "object",
+      "additionalProperties": { "type": "string" },
+      "default": {}
+    },
+    "stopOnEntry": {
+      "type": "boolean",
+      "default": false
+    },
+    "preLaunchTask": {
+      "type": "string",
+      "description": "Task to run before launch. Defaults to `gprbuild` on the active project.",
+      "default": "gprbuild"
+    },
+    "pid": {
+      "type": ["integer", "string"],
+      "description": "Process to attach to (when request=attach)."
+    }
+  }
+}

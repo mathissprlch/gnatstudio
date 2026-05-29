@@ -1,11 +1,12 @@
-// Zed settings
+// Zed GNAT settings
 //
-// For information on how to configure Zed, see the Zed
-// documentation: https://zed.dev/docs/configuring-zed
+// This file is your editable user settings. The Ada/SPARK defaults live in
+// the bundled extension and the read-only `default settings`. Run
+// `zed: open default settings` from the command palette (cmd-shift-p) to
+// browse them.
 //
-// To see all of Zed's default settings without changing your
-// custom settings, run `zed: open default settings` from the
-// command palette (cmd-shift-p / ctrl-shift-p)
+// Anything you put here overrides the defaults. For ALS, GNATprove and
+// RecordFlux specific configuration, see the comments below.
 {
   "ui_font_size": 16,
   "buffer_font_size": 15,
@@ -14,4 +15,36 @@
     "light": "One Light",
     "dark": "One Dark",
   },
+  // Show SPARK proof results inline next to the line they relate to.
+  "diagnostics": {
+    "inline": { "enabled": true, "padding": 6 },
+  },
+  // Ada / SPARK language servers. Uncomment and tune as needed.
+  // "lsp": {
+  //   "ada_language_server": {
+  //     "settings": {
+  //       "ada": {
+  //         "projectFile": "my_project.gpr",
+  //         "scenarioVariables": { "BUILD": "Debug" }
+  //       }
+  //     }
+  //   },
+  //   "gnatprove_proof": {
+  //     "settings": {
+  //       "gnatprove": {
+  //         "level": 4,
+  //         "mode": "all",
+  //         "timeout": 120,
+  //         "autoRerunOnSave": true
+  //       }
+  //     }
+  //   },
+  //   "recordflux": {
+  //     "settings": {
+  //       "recordflux": {
+  //         "generate": { "language": "ada", "outputDir": "generated" }
+  //       }
+  //     }
+  //   }
+  // },
 }

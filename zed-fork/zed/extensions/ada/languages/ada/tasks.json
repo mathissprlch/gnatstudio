@@ -1,0 +1,15 @@
+[
+  {
+    "label": "Ada: build",
+    "command": "zed-gnat-build",
+    "tags": ["ada-main"],
+    "reveal": "always"
+  },
+  {
+    "label": "Ada: build & run",
+    "command": "zed-gnat-run",
+    "tags": ["ada-main"],
+    "use_new_terminal": false,
+    "reveal": "always"
+  }
+]

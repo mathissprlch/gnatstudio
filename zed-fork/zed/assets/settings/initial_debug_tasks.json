@@ -26,4 +26,35 @@
     "console": "integratedTerminal",
     "type": "pwa-node",
   },
+  {
+    // codelldb is the working default on macOS (gdb has no native
+    // arm64-darwin support). `program` assumes the executable is named after
+    // the active file's stem and lands in the worktree root (Exec_Dir "."),
+    // e.g. debugging main.adb runs ./main. Override per-project in
+    // .zed/debug.json if your .gpr puts the exe elsewhere.
+    "label": "Debug active Ada main (codelldb)",
+    "adapter": "codelldb",
+    "program": "$ZED_WORKTREE_ROOT/$ZED_STEM",
+    "request": "launch",
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "build": "gprbuild",
+    "sourceLanguages": ["ada", "c", "cpp"],
+  },
+  {
+    // gdb has full Ada support but works in practice only on Linux/Intel or
+    // for cross/remote (embedded) targets — not native arm64 macOS.
+    "label": "Debug active Ada main (gdb)",
+    "adapter": "GNAT",
+    "program": "$ZED_WORKTREE_ROOT/$ZED_STEM",
+    "request": "launch",
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "stopOnEntry": false,
+    "build": "gprbuild",
+  },
+  {
+    "label": "Attach to running Ada process (gdb)",
+    "adapter": "GNAT",
+    "request": "attach",
+    "pid": "${command:pickProcess}",
+  },
 ]

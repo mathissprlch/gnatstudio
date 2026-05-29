@@ -1,0 +1,276 @@
+# M2 step 2: render Ada fixed-point with the actual scaled value.
+#
+# Builds on lldb-ada-fixed-point.patch (which made *_fixed types resolve to
+# their underlying integer so the variable would render at all -- as the raw
+# stored int, e.g. `bf = 40`, `m = 1999`). This step plumbs the DWARF scale
+# (DW_AT_binary_scale or DW_AT_decimal_scale) and adds an AdaLanguage summary
+# that multiplies the raw int by 2^binary_scale or 10^decimal_scale to display
+# the real value (`bf = 2.5`, `m = 19.99`).
+#
+# Key design choice: lldb's Clang AST deduplicates builtin integers (one
+# ShortTy/IntTy/LongLongTy singleton per AST context), so we cannot key the
+# scale on the underlying integer's QualType without polluting plain
+# Short_Integer / Long_Long_Integer values. The fix is to wrap each fixed-point
+# base in its own Clang typedef (named after the GNAT base type), giving it a
+# unique QualType that the scale map can key on cleanly.
+#
+# Files touched:
+#   - ParsedDWARFTypeAttributes: two std::optional<int64_t> fields for the
+#     scale, populated in its ctor when DW_AT_binary_scale / DW_AT_decimal_scale
+#     appears.
+#   - DWARFASTParserClang base_type case: when the encoding is *_fixed and the
+#     type system is TypeSystemAda, wrap clang_type in CreateTypedef and record
+#     the scale on the typedef's opaque QualType.
+#   - TypeSystemAda: FixedPointScale struct + RecordFixedPointScale /
+#     GetFixedPointScale backed by a DenseMap<opaque_compiler_type_t, ...>.
+#   - AdaLanguage::GetHardcodedSummaries: a new matcher that walks the
+#     CompilerType's typedef chain (one hop at a time -- canonical would skip
+#     past the fixed-point typedef back to bare short/int) and applies the
+#     scale to the raw signed value.
+#
+# Named with a "z" prefix so it sorts last in the patches glob -- it depends on
+# both lldb-ada-typesystem-ada.patch (creates TypeSystemAda) and
+# lldb-ada-language-plugin.patch (creates AdaLanguage).
+diff --git a/lldb/source/Plugins/Language/Ada/AdaLanguage.cpp b/lldb/source/Plugins/Language/Ada/AdaLanguage.cpp
+index fe0323bf0..00409402c 100644
+--- a/lldb/source/Plugins/Language/Ada/AdaLanguage.cpp
++++ b/lldb/source/Plugins/Language/Ada/AdaLanguage.cpp
+@@ -7,6 +7,7 @@
+ //===----------------------------------------------------------------------===//
+ 
+ #include "AdaLanguage.h"
++#include "Plugins/TypeSystem/Ada/TypeSystemAda.h"
+ #include "lldb/Core/Address.h"
+ #include "lldb/Core/PluginManager.h"
+ #include "lldb/Core/ValueObject.h"
+@@ -22,6 +23,9 @@
+ #include "llvm/ADT/StringRef.h"
+ #include "llvm/Support/Threading.h"
+ 
++#include <cmath>
++#include <optional>
++
+ using namespace lldb;
+ using namespace lldb_private;
+ using namespace lldb_private::formatters;
+@@ -180,6 +184,50 @@ bool AdaCharArraySummaryProvider(ValueObject &valobj, Stream &stream,
+       StringPrinter::StringElementType::ASCII>(sopts);
+ }
+ 
++// Walk the value's type one Clang-typedef hop at a time looking for an Ada
++// fixed-point scale recorded by DWARFASTParserClang. The scale lives on the
++// per-base-type typedef the parser wraps around the underlying integer (see
++// DWARFASTParserClang base_type case). The variable's own type may be a
++// subrange typedef on top of that, so walk down via GetTypedefedType rather
++// than canonicalizing (canonical would skip straight to the bare short/int and
++// lose the recorded scale).
++static std::optional<TypeSystemAda::FixedPointScale>
++GetAdaFixedPointScale(ValueObject &valobj) {
++  CompilerType ct = valobj.GetCompilerType();
++  if (!ct.IsValid())
++    return std::nullopt;
++  auto ts = ct.GetTypeSystem();
++  auto ts_ada = ts.dyn_cast_or_null<TypeSystemAda>();
++  if (!ts_ada)
++    return std::nullopt;
++  while (ct.IsValid()) {
++    if (auto s = ts_ada->GetFixedPointScale(ct.GetOpaqueQualType()))
++      return s;
++    CompilerType next = ct.GetTypedefedType();
++    if (!next.IsValid() ||
++        next.GetOpaqueQualType() == ct.GetOpaqueQualType())
++      break;
++    ct = next;
++  }
++  return std::nullopt;
++}
++
++bool AdaFixedPointSummaryProvider(ValueObject &valobj, Stream &stream,
++                                  const TypeSummaryOptions &) {
++  auto scale = GetAdaFixedPointScale(valobj);
++  if (!scale)
++    return false;
++  bool success = false;
++  int64_t raw = valobj.GetValueAsSigned(0, &success);
++  if (!success)
++    return false;
++  double scaled = static_cast<double>(raw) *
++                  std::pow(scale->decimal ? 10.0 : 2.0,
++                           static_cast<double>(scale->exponent));
++  stream.Printf("%g", scaled);
++  return true;
++}
++
+ } // namespace
+ 
+ HardcodedFormatters::HardcodedSummaryFinder
+@@ -213,6 +261,19 @@ AdaLanguage::GetHardcodedSummaries() {
+             return formatter_sp;
+           return nullptr;
+         });
++    g_formatters.push_back(
++        [](ValueObject &valobj, lldb::DynamicValueType,
++           FormatManager &) -> TypeSummaryImpl::SharedPointer {
++          static CXXFunctionSummaryFormat::SharedPointer formatter_sp(
++              new CXXFunctionSummaryFormat(
++                  TypeSummaryImpl::Flags().SetCascades(true).SetDontShowChildren(
++                      true),
++                  AdaFixedPointSummaryProvider,
++                  "Ada fixed-point summary provider"));
++          if (GetAdaFixedPointScale(valobj))
++            return formatter_sp;
++          return nullptr;
++        });
+   });
+ 
+   return g_formatters;
+diff --git a/lldb/source/Plugins/SymbolFile/DWARF/DWARFASTParserClang.cpp b/lldb/source/Plugins/SymbolFile/DWARF/DWARFASTParserClang.cpp
+index 8c2c6ec9f..8e1058d6e 100644
+--- a/lldb/source/Plugins/SymbolFile/DWARF/DWARFASTParserClang.cpp
++++ b/lldb/source/Plugins/SymbolFile/DWARF/DWARFASTParserClang.cpp
+@@ -10,6 +10,7 @@
+ 
+ #include "DWARFASTParser.h"
+ #include "DWARFASTParserClang.h"
++#include "Plugins/TypeSystem/Ada/TypeSystemAda.h"
+ #include "DWARFDebugInfo.h"
+ #include "DWARFDeclContext.h"
+ #include "DWARFDefines.h"
+@@ -319,6 +320,16 @@ ParsedDWARFTypeAttributes::ParsedDWARFTypeAttributes(const DWARFDIE &die) {
+       byte_stride = form_value.Unsigned();
+       break;
+ 
++    // Ada fixed-point (GNAT -fgnat-encodings=minimal): captured so the
++    // base-type parse below can hand the scale to TypeSystemAda.
++    case DW_AT_binary_scale:
++      binary_scale = form_value.Signed();
++      break;
++
++    case DW_AT_decimal_scale:
++      decimal_scale = form_value.Signed();
++      break;
++
+     case DW_AT_calling_convention:
+       calling_convention = form_value.Unsigned();
+       break;
+@@ -677,6 +688,37 @@ DWARFASTParserClang::ParseTypeModifier(const SymbolContext &sc,
+     clang_type = m_ast.GetBuiltinTypeForDWARFEncodingAndBitSize(
+         attrs.name.GetStringRef(), attrs.encoding,
+         attrs.byte_size.value_or(0) * 8);
++    // Ada fixed-point: lldb has no fixed-point type, so the encoding was just
++    // resolved to its underlying integer (via the lldb-ada-fixed-point.patch
++    // fall-through). Wrap that integer in a Clang typedef named after the
++    // DWARF base type so this fixed-point type has its own unique QualType --
++    // without the typedef, every variable of the same bit width would alias
++    // the shared ShortTy/IntTy/LongLongTy singleton and the formatter could
++    // not distinguish a Bin_Fixed from a plain Short_Integer. Record the
++    // DW_AT_binary_scale / DW_AT_decimal_scale on that QualType for the
++    // AdaLanguage formatter to apply at render time.
++    if (clang_type && (attrs.encoding == llvm::dwarf::DW_ATE_signed_fixed ||
++                       attrs.encoding == llvm::dwarf::DW_ATE_unsigned_fixed) &&
++        !attrs.name.IsEmpty()) {
++      if (auto *ts_ada = llvm::dyn_cast<TypeSystemAda>(&m_ast)) {
++        CompilerType typedef_type = m_ast.CreateTypedef(
++            clang_type.GetOpaqueQualType(), attrs.name.AsCString(),
++            CompilerDeclContext(), 0);
++        if (typedef_type.IsValid()) {
++          clang_type = typedef_type;
++          if (attrs.binary_scale)
++            ts_ada->RecordFixedPointScale(
++                clang_type.GetOpaqueQualType(),
++                {/*decimal=*/false,
++                 static_cast<int32_t>(*attrs.binary_scale)});
++          else if (attrs.decimal_scale)
++            ts_ada->RecordFixedPointScale(
++                clang_type.GetOpaqueQualType(),
++                {/*decimal=*/true,
++                 static_cast<int32_t>(*attrs.decimal_scale)});
++        }
++      }
++    }
+     break;
+ 
+   case DW_TAG_pointer_type:
+diff --git a/lldb/source/Plugins/SymbolFile/DWARF/DWARFASTParserClang.h b/lldb/source/Plugins/SymbolFile/DWARF/DWARFASTParserClang.h
+index e447577d6..526154818 100644
+--- a/lldb/source/Plugins/SymbolFile/DWARF/DWARFASTParserClang.h
++++ b/lldb/source/Plugins/SymbolFile/DWARF/DWARFASTParserClang.h
+@@ -517,6 +517,12 @@ struct ParsedDWARFTypeAttributes {
+   uint32_t bit_stride = 0;
+   uint32_t byte_stride = 0;
+   uint32_t encoding = 0;
++  // Ada fixed-point (GNAT -fgnat-encodings=minimal) emits DW_ATE_signed_fixed
++  // / DW_ATE_unsigned_fixed plus one of these scale attributes. Captured here
++  // so the base-type parse can wrap the integer in a unique Clang typedef and
++  // record the scale on TypeSystemAda for the AdaLanguage formatter.
++  std::optional<int64_t> binary_scale;
++  std::optional<int64_t> decimal_scale;
+   clang::RefQualifierKind ref_qual =
+       clang::RQ_None; ///< Indicates ref-qualifier of
+                       ///< C++ member function if present.
+diff --git a/lldb/source/Plugins/TypeSystem/Ada/TypeSystemAda.cpp b/lldb/source/Plugins/TypeSystem/Ada/TypeSystemAda.cpp
+index 6a3c8e15b..afb111ef0 100644
+--- a/lldb/source/Plugins/TypeSystem/Ada/TypeSystemAda.cpp
++++ b/lldb/source/Plugins/TypeSystem/Ada/TypeSystemAda.cpp
+@@ -160,3 +160,17 @@ ConstString
+ TypeSystemAda::GetDisplayTypeName(lldb::opaque_compiler_type_t type) {
+   return AdaifyTypeName(TypeSystemClang::GetDisplayTypeName(type));
+ }
++
++void TypeSystemAda::RecordFixedPointScale(
++    lldb::opaque_compiler_type_t type, FixedPointScale scale) {
++  m_fixed_point_scales[type] = scale;
++}
++
++std::optional<TypeSystemAda::FixedPointScale>
++TypeSystemAda::GetFixedPointScale(
++    lldb::opaque_compiler_type_t type) const {
++  auto it = m_fixed_point_scales.find(type);
++  if (it == m_fixed_point_scales.end())
++    return std::nullopt;
++  return it->second;
++}
+diff --git a/lldb/source/Plugins/TypeSystem/Ada/TypeSystemAda.h b/lldb/source/Plugins/TypeSystem/Ada/TypeSystemAda.h
+index baa97f8b0..466830a9f 100644
+--- a/lldb/source/Plugins/TypeSystem/Ada/TypeSystemAda.h
++++ b/lldb/source/Plugins/TypeSystem/Ada/TypeSystemAda.h
+@@ -11,6 +11,10 @@
+ 
+ #include "Plugins/TypeSystem/Clang/TypeSystemClang.h"
+ 
++#include "llvm/ADT/DenseMap.h"
++
++#include <optional>
++
+ namespace lldb_private {
+ 
+ /// A type system for Ada.
+@@ -66,6 +70,28 @@ public:
+   /// "Pkg.Type") for display. Display-only; GetTypeName (used for lookups) is
+   /// left untouched.
+   ConstString GetDisplayTypeName(lldb::opaque_compiler_type_t type) override;
++
++  /// Ada fixed-point scale, recorded by DWARFASTParserClang on a unique
++  /// per-base-type Clang typedef so AdaLanguage's data formatter can render
++  /// the real (scaled) value (raw * 2^binary_scale or raw * 10^decimal_scale).
++  /// lldb's Clang type system has no fixed-point type and the underlying
++  /// integer QualTypes are deduplicated singletons (one ShortTy per AST), so
++  /// the parser wraps each fixed-point base in its own typedef and keys the
++  /// scale on that typedef's QualType -- the only way to disambiguate from a
++  /// plain Short_Integer/Long_Long_Integer of the same width.
++  struct FixedPointScale {
++    bool decimal;       ///< false: power of 2, true: power of 10
++    int32_t exponent;
++  };
++
++  void RecordFixedPointScale(lldb::opaque_compiler_type_t type,
++                             FixedPointScale scale);
++  std::optional<FixedPointScale>
++  GetFixedPointScale(lldb::opaque_compiler_type_t type) const;
++
++private:
++  llvm::DenseMap<lldb::opaque_compiler_type_t, FixedPointScale>
++      m_fixed_point_scales;
+ };
+ 
+ } // namespace lldb_private

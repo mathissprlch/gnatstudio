@@ -1,0 +1,527 @@
+name: Build Zed GNAT (macOS)
+
+# One run does it all: build the Ada-patched liblldb, repackage codelldb around
+# it, then build the Zed GNAT .app with that patched codelldb baked into the
+# bundled toolchain. The `build` job depends on `liblldb`, downloads its
+# codelldb-ada artifact, and injects it before `make app` bundles the toolchain.
+
+on:
+  # Branch builds run via the pull_request event below (one build per push to a
+  # PR). push is master-only so a commit with an open PR doesn't build twice.
+  push:
+    branches:
+      - master
+    paths:
+      - 'zed-fork/**'
+      - '.github/workflows/zed-gnat-mac.yml'
+  pull_request:
+    paths:
+      - 'zed-fork/**'
+      - '.github/workflows/zed-gnat-mac.yml'
+  workflow_dispatch:
+    inputs:
+      release_channel:
+        description: 'Zed release channel'
+        type: choice
+        default: 'stable'
+        options: [stable, preview, nightly, dev]
+
+# Never cancel in-progress runs (so a DMG build always finishes); the group
+# serializes runs instead, so rapid pushes queue rather than pile up or kill
+# each other. With sccache the queued builds are cheap.
+concurrency:
+  group: zed-gnat-mac-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pull-requests: write   # for the failure log → PR comment steps
+
+env:
+  # Keep in sync with LLVM_REF in zed-fork/scripts/build-lldb-ada.sh.
+  LLVM_REF: cd708029e0b2869e80abe31ddb175f7c35361f90
+  # sccache server default is to exit after 10 min idle, which would lose its
+  # in-memory hit/miss counters before the post-build stats step queries them
+  # (and the auto-restarted server then reports 0). Keep it alive for the
+  # whole run.
+  SCCACHE_IDLE_TIMEOUT: "86400"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Patched liblldb + repackaged codelldb (the Ada debugger half).
+  # ---------------------------------------------------------------------------
+  liblldb:
+    name: Build patched liblldb (aarch64)
+    runs-on: macos-14
+    env:
+      WORK: ${{ github.workspace }}/zed-fork/build/lldb-ada/work
+      OUT: ${{ github.workspace }}/zed-fork/build/lldb-ada/liblldb
+      BUILD_LOG: ${{ github.workspace }}/zed-fork/build/lldb-ada/build.log
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show runner resources
+        run: |
+          echo "arch: $(uname -m)  cpus: $(sysctl -n hw.ncpu)"
+          df -h /
+          echo "RAM (bytes): $(sysctl -n hw.memsize)"
+
+      # Unchanged patches -> restore the prebuilt dylib and skip the build.
+      # Key on the .patch files only (doc/README edits must not bust it).
+      - name: Cache built liblldb
+        id: liblldb-cache
+        uses: actions/cache@v4
+        with:
+          path: zed-fork/build/lldb-ada/liblldb
+          key: liblldb-ada-${{ runner.arch }}-${{ env.LLVM_REF }}-${{ hashFiles('zed-fork/patches/*.patch', 'zed-fork/scripts/build-lldb-ada.sh') }}
+
+      - name: Cache ccache
+        if: steps.liblldb-cache.outputs.cache-hit != 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: lldb-ada-ccache-v2-${{ runner.arch }}-${{ hashFiles('zed-fork/patches/*.patch') }}
+          restore-keys: lldb-ada-ccache-v2-${{ runner.arch }}-
+          save-always: true
+
+      # One traced step so disk/brew/cmake/ninja all land in BUILD_LOG and the
+      # failure reporter has the real error regardless of which command failed.
+      - name: Build liblldb
+        id: build
+        if: steps.liblldb-cache.outputs.cache-hit != 'true'
+        env:
+          TARGETS: AArch64
+          LLDB_ENABLE_PYTHON: 'OFF'
+          CMAKE_ARGS: -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          CCACHE_MAXSIZE: 1G
+          CCACHE_COMPRESS: '1'
+        run: |
+          set -uo pipefail
+          mkdir -p "$(dirname "$BUILD_LOG")"
+          export CCACHE_DIR="$HOME/.cache/ccache"
+          {
+            set -ex
+            df -h /
+            brew install cmake ninja ccache
+            cmake --version; ninja --version; ccache --version | head -1
+            ccache --zero-stats || true
+            bash zed-fork/scripts/build-lldb-ada.sh
+            ccache --show-stats || true
+            mkdir -p "$OUT"
+            cp -a "$WORK"/build/lib/liblldb*.dylib "$OUT"/
+            rm -rf "$WORK"
+            ls -la "$OUT"
+          } 2>&1 | tee -a "$BUILD_LOG"
+
+      - name: Report liblldb failure to PR
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set +e
+          {
+            echo "### liblldb build failed — \`aarch64\` (${{ github.event_name }})"
+            echo
+            echo "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo "Commit: \`${{ github.sha }}\`"
+            echo
+            echo "Disk now:"
+            echo '```'
+            df -h /
+            echo '```'
+            echo "Last 250 lines of build log:"
+            echo '```'
+            tail -n 250 "$BUILD_LOG" 2>/dev/null || echo "(no build log captured)"
+            echo '```'
+          } > /tmp/lldb-fail.md
+          cat /tmp/lldb-fail.md
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          if [[ -z "$PR_NUMBER" ]]; then
+            PR_NUMBER=$(gh pr list --repo "${{ github.repository }}" \
+                          --head "${{ github.ref_name }}" \
+                          --state open --json number --jq '.[0].number // empty')
+          fi
+          if [[ -n "$PR_NUMBER" ]]; then
+            gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}" --body-file /tmp/lldb-fail.md
+          fi
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lldb-ada-build-log
+          path: zed-fork/build/lldb-ada/build.log
+          if-no-files-found: ignore
+          retention-days: 14
+
+      # Swap our patched liblldb into codelldb v1.11.5 (also LLDB 19.1.x) and
+      # emit a .vsix the build job injects into the toolchain.
+      - name: Repackage codelldb with patched liblldb
+        id: repackage
+        if: steps.liblldb-cache.outputs.cache-hit == 'true' || steps.build.conclusion == 'success'
+        env:
+          CODELLDB_VERSION: v1.11.5
+          CL_OUT: ${{ github.workspace }}/zed-fork/build/lldb-ada/codelldb-ada
+        run: |
+          set -euo pipefail
+          LIBLLDB="$OUT" OUTDIR="$CL_OUT" bash zed-fork/scripts/repackage-codelldb.sh
+          ( cd "$CL_OUT" && zip -q -r -X "$RUNNER_TEMP/codelldb-ada-aarch64.vsix" . )
+          ls -lh "$RUNNER_TEMP/codelldb-ada-aarch64.vsix"
+
+      - name: Upload codelldb (Ada)
+        if: steps.repackage.conclusion == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: codelldb-ada-aarch64
+          path: ${{ runner.temp }}/codelldb-ada-aarch64.vsix
+          if-no-files-found: error
+          retention-days: 14
+
+  # ---------------------------------------------------------------------------
+  # Zed GNAT .app, with the patched codelldb baked into the bundled toolchain.
+  # ---------------------------------------------------------------------------
+  build:
+    name: Build .app (${{ matrix.target }})
+    needs: liblldb
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            runner: macos-14   # Apple Silicon
+    env:
+      TARGET_TRIPLE: ${{ matrix.target }}
+      RELEASE_CHANNEL: ${{ github.event.inputs.release_channel || 'stable' }}
+      TOOLCHAIN_DIR: ${{ github.workspace }}/zed-fork/build/toolchain
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: short
+      BUILD_LOG: ${{ github.workspace }}/zed-fork/build/build.log
+      # Patched codelldb (downloaded below) -> provision-toolchain.sh bundles it.
+      CODELLDB_DIST: ${{ github.workspace }}/zed-fork/build/codelldb-ada/codelldb-ada-aarch64.vsix
+      # sccache caches rustc invocations in the GitHub Actions cache so Zed's
+      # large Rust compile is reused across runs. (zed/target is far bigger than
+      # the ~10 GB cache cap, so caching it never worked; object-level caching
+      # fits.) CARGO_INCREMENTAL=0 is required for sccache to cache.
+      # RUSTC_WRAPPER/SCCACHE_GHA_ENABLED are exported by the probe step below,
+      # and only when the GHA cache backend is actually reachable: during a
+      # cache-service outage sccache's server fails to start, which would
+      # otherwise make even `cargo fetch` (it runs `rustc -vV`) a hard error.
+      CARGO_INCREMENTAL: "0"
+
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # subtree commits aren't reachable from a shallow clone
+
+      - name: Download patched codelldb
+        uses: actions/download-artifact@v4
+        with:
+          name: codelldb-ada-aarch64
+          path: zed-fork/build/codelldb-ada
+
+      - name: Install build tooling
+        run: |
+          brew update
+          brew install cmake ninja pkg-config python@3.12 rsync
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: |
+            ${{ matrix.target }}
+            wasm32-wasip1
+
+      - name: Set up sccache
+        uses: mozilla-actions/sccache-action@v0.0.10
+
+      - name: Enable sccache only if its cache backend works
+        env:
+          SCCACHE_GHA_ENABLED: "true"
+        run: |
+          # A GHA cache-service outage makes sccache's server fail to start, and
+          # with RUSTC_WRAPPER=sccache that turns even `cargo fetch` (which calls
+          # `rustc -vV`) into a hard error that kills the build. `--start-server`
+          # alone doesn't detect this, so probe with the *exact* command cargo
+          # runs through the wrapper: if `sccache <rustc> -vV` succeeds the real
+          # build will too; otherwise build without sccache this run. Retry a
+          # couple times with backoff so a transient GHA cache hiccup doesn't
+          # cost us a 2h cold cargo build.
+          set +e
+          RUSTC_BIN="$(rustup which rustc 2>/dev/null || command -v rustc)"
+          for attempt in 1 2 3; do
+            sccache --stop-server >/dev/null 2>&1 || true
+            sccache "$RUSTC_BIN" -vV > /dev/null 2> /tmp/sccache-probe.log
+            if [ $? -eq 0 ]; then
+              echo "sccache backend works on attempt ${attempt} -> enabling rustc wrapper"
+              echo "RUSTC_WRAPPER=sccache"   >> "$GITHUB_ENV"
+              echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
+              break
+            fi
+            echo "::warning::sccache probe attempt ${attempt} failed:"
+            cat /tmp/sccache-probe.log || true
+            if [ "$attempt" -lt 3 ]; then
+              sleep $((attempt * 5))
+            else
+              echo "::warning::sccache cache backend unavailable after 3 attempts; building without sccache this run"
+            fi
+          done
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          # Only dependency sources. The compiled artifacts (zed/target) are far
+          # larger than GitHub's ~10 GB cache cap, so caching them silently
+          # failed and forced a full recompile every run; sccache caches rustc
+          # output at the object level instead, which fits and is reused.
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: zed-cargo-${{ matrix.target }}-${{ hashFiles('zed-fork/zed/Cargo.lock') }}
+          restore-keys: zed-cargo-${{ matrix.target }}-
+          save-always: true
+
+      # Alire's source-download cache (~/.cache/alire). Rolling key + prefix
+      # restore so it stays warm across runs; a hit saves ~5-10 min of
+      # re-downloading gnat_native even when the toolchain output cache misses.
+      - name: Cache Alire downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/alire
+          key: alire-downloads-${{ matrix.target }}-${{ github.sha }}
+          restore-keys: alire-downloads-${{ matrix.target }}-
+          save-always: true
+
+      # Toolchain output cache is keyed only on provision-gnat.sh -- the
+      # heavy 80% (Alire + GNAT + ALS + SPARK). Edits to the orchestrator
+      # (provision-toolchain.sh) or lighter bits (rflx shim, codelldb,
+      # Python venv) leave this cache warm. restore-keys degrades gracefully:
+      # Alire is idempotent, so re-provisioning on top of a restored tree is
+      # a fast delta.
+      - name: Cache toolchain
+        id: toolchain-cache
+        uses: actions/cache@v4
+        with:
+          path: zed-fork/build/toolchain
+          key: gnat-toolchain-${{ matrix.target }}-${{ hashFiles('zed-fork/scripts/provision-gnat.sh', 'zed-fork/scripts/relocate-toolchain.py') }}
+          restore-keys: gnat-toolchain-${{ matrix.target }}-
+          save-always: true
+
+      - name: Stage GNAT toolchain
+        if: steps.toolchain-cache.outputs.cache-hit != 'true'
+        working-directory: zed-fork
+        run: |
+          mkdir -p build
+          make toolchain 2>&1 | tee -a "$BUILD_LOG"
+
+      # Guarantee the patched codelldb is in the toolchain whether it was just
+      # staged or restored from cache (make toolchain is skipped on a cache hit).
+      - name: Inject patched codelldb
+        run: |
+          set -euo pipefail
+          test -f "$CODELLDB_DIST" || { echo "patched codelldb missing at $CODELLDB_DIST"; exit 1; }
+          DEST="$TOOLCHAIN_DIR/codelldb"
+          rm -rf "$DEST"; mkdir -p "$DEST" "$TOOLCHAIN_DIR/bin"
+          unzip -q "$CODELLDB_DIST" -d "$DEST"
+          ln -sf "../codelldb/extension/adapter/codelldb" "$TOOLCHAIN_DIR/bin/codelldb"
+          chmod +x "$DEST/extension/adapter/codelldb"
+          test -x "$DEST/extension/adapter/codelldb"
+          echo "patched codelldb injected into $DEST"
+
+      # Stage the rflx shim, RecordFlux Dockerfile, and zed-gnat-{build,run}
+      # helpers fresh from the repo on every run, so cache-restored toolchains
+      # pick up edits without busting the (very expensive) GNAT toolchain cache
+      # key.
+      - name: Stage RecordFlux shim
+        run: |
+          set -euo pipefail
+          mkdir -p "$TOOLCHAIN_DIR/bin" "$TOOLCHAIN_DIR/share/recordflux"
+          cp zed-fork/docker/rflx "$TOOLCHAIN_DIR/bin/rflx"
+          chmod +x "$TOOLCHAIN_DIR/bin/rflx"
+          cp zed-fork/docker/recordflux.Dockerfile "$TOOLCHAIN_DIR/share/recordflux/recordflux.Dockerfile"
+          cp zed-fork/scripts/zed-gnat-build "$TOOLCHAIN_DIR/bin/zed-gnat-build"
+          cp zed-fork/scripts/zed-gnat-run "$TOOLCHAIN_DIR/bin/zed-gnat-run"
+          chmod +x "$TOOLCHAIN_DIR/bin/zed-gnat-build" "$TOOLCHAIN_DIR/bin/zed-gnat-run"
+          echo "staged RecordFlux shim + Dockerfile + zed-gnat-{build,run}"
+
+      # Prebuild the Ada/SPARK extension once on CI so the .app ships it
+      # already-compiled (WASM + grammar). Users' machines don't need Cargo or
+      # the wasm32 target. The launcher first-installs this into Zed's
+      # extensions dir on first run, superseding any marketplace "Ada".
+      - name: Prebuild Ada extension
+        id: prebuild_ada_ext
+        working-directory: zed-fork/zed
+        run: |
+          set -uo pipefail
+          mkdir -p "$(dirname "$BUILD_LOG")"
+          {
+            set -ex
+            mkdir -p "${RUNNER_TEMP}/ada-ext-scratch"
+            rm -rf "${RUNNER_TEMP}/ada-extension"
+            cargo build --release -p extension_cli
+            RUST_LOG=info ./target/release/zed-extension \
+              --source-dir extensions/ada \
+              --output-dir "${RUNNER_TEMP}/ada-extension" \
+              --scratch-dir "${RUNNER_TEMP}/ada-ext-scratch"
+            ls -la "${RUNNER_TEMP}/ada-extension"
+          } 2>&1 | tee -a "$BUILD_LOG"
+
+      - name: Build Zed GNAT.app
+        id: build_app
+        working-directory: zed-fork
+        env:
+          SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID:         ${{ secrets.APPLE_ID }}
+          APPLE_PASS:       ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID:    ${{ secrets.APPLE_TEAM_ID }}
+          ZED_GNAT_ADA_EXTENSION_DIR: ${{ runner.temp }}/ada-extension
+          ZED_GNAT_BUILD_STAMP: ${{ github.sha }}
+        run: |
+          mkdir -p build
+          set -o pipefail
+          # Capture sccache state at both ends so we can tell whether cargo
+          # actually went through sccache. The downstream "Report sccache stats
+          # to PR" step queries a possibly-restarted server (which then reports
+          # 0); the snapshot we save here is the in-build server's own counters.
+          echo "::group::sccache before make app"
+          echo "RUSTC_WRAPPER='${RUSTC_WRAPPER:-unset}'"
+          sccache --show-stats 2>&1 | head -6 || true
+          echo "::endgroup::"
+          # bundle-mac.sh already tolerates upstream Zed's flaky, discarded DMG
+          # step (hdiutil "Resource busy") and keeps the toolchain-injected .app,
+          # which is the only thing we ship.
+          make app 2>&1 | tee -a "$BUILD_LOG"
+          {
+            echo "RUSTC_WRAPPER='${RUSTC_WRAPPER:-unset}'"
+            sccache --show-stats 2>&1 || echo "(sccache --show-stats failed)"
+          } > /tmp/sccache-final.txt
+          echo "::group::sccache after make app (snapshot in /tmp/sccache-final.txt)"
+          cat /tmp/sccache-final.txt
+          echo "::endgroup::"
+
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats || true
+
+      # Post sccache stats to the PR on a successful build so we can see hit
+      # rate without log access -- the only reliable way to tell whether the
+      # 2h cargo build is "sccache off / cold" vs "sccache on / low hit" vs
+      # "intrinsic 500-crate compile". Failure path is covered by the next
+      # step.
+      - name: Report sccache stats to PR
+        if: success() && steps.build_app.conclusion == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set +e
+          mkdir -p zed-fork/build
+          out=zed-fork/build/sccache-stats.md
+          {
+            echo "### sccache stats — \`${{ matrix.target }}\` (build green)"
+            echo
+            echo "Commit: \`${{ github.sha }}\`"
+            echo "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo "RUSTC_WRAPPER: \`${RUSTC_WRAPPER:-(unset -- sccache disabled this run)}\`"
+            echo
+            echo "**Stats from this step (may be a fresh server if the build's died):**"
+            echo '```'
+            sccache --show-stats 2>&1 | head -40 || echo "(sccache not available)"
+            echo '```'
+            if [[ -f /tmp/sccache-final.txt ]]; then
+              echo
+              echo "**Stats captured *inside* build_app (real in-build counters):**"
+              echo '```'
+              head -40 /tmp/sccache-final.txt
+              echo '```'
+            fi
+            if [[ -z "${RUSTC_WRAPPER:-}" && -s /tmp/sccache-probe.log ]]; then
+              echo
+              echo "**Probe failure log (why sccache disabled itself):**"
+              echo '```'
+              head -40 /tmp/sccache-probe.log
+              echo '```'
+            fi
+          } > "$out"
+          cat "$out"
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          if [[ -z "$PR_NUMBER" ]]; then
+            PR_NUMBER=$(gh pr list --repo "${{ github.repository }}" \
+                          --head "${{ github.ref_name }}" \
+                          --state open --json number --jq '.[0].number // empty')
+          fi
+          if [[ -n "$PR_NUMBER" ]]; then
+            gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}" \
+                --body-file "$out" && echo "posted to PR #$PR_NUMBER"
+          fi
+
+      - name: Surface build failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set +e
+          mkdir -p zed-fork/build
+          : > zed-fork/build/failure.md
+          {
+            echo "### CI failure — \`${{ matrix.target }}\` (${{ github.event_name }})"
+            echo
+            # Which step failed -- helps when something pre-build_app blew up.
+            echo "First failing step: \`${{ steps.prebuild_ada_ext.outcome == 'failure' && 'Prebuild Ada extension' || (steps.build_app.outcome == 'failure' && 'Build Zed GNAT.app' || 'unknown') }}\`"
+            echo "Run:  ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo "Commit: \`${{ github.sha }}\`"
+            echo
+            echo "Last 200 lines of build log:"
+            echo
+            echo '```'
+            tail -n 200 "$BUILD_LOG" 2>/dev/null || echo "(no build log captured)"
+            echo '```'
+          } > zed-fork/build/failure.md
+          cat zed-fork/build/failure.md
+
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          if [[ -z "$PR_NUMBER" ]]; then
+            PR_NUMBER=$(gh pr list --repo "${{ github.repository }}" \
+                          --head "${{ github.ref_name }}" \
+                          --state open --json number --jq '.[0].number // empty')
+          fi
+          if [[ -n "$PR_NUMBER" ]]; then
+            gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}" \
+                --body-file zed-fork/build/failure.md
+            echo "Posted failure log to PR #$PR_NUMBER"
+          else
+            echo "No open PR for ${{ github.ref_name }}; skipping comment"
+          fi
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-${{ matrix.target }}
+          path: zed-fork/build/build.log
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Archive .app for upload
+        if: steps.build_app.conclusion == 'success'
+        working-directory: zed-fork
+        run: |
+          shopt -s nullglob
+          BUNDLE_DIR="zed/target/${TARGET_TRIPLE}/release/bundle/osx"
+          cd "$BUNDLE_DIR"
+          for app in *.app; do
+            tar -czf "${app}.tar.gz" "$app"
+          done
+          ls -la
+
+      - name: Upload artifact
+        if: steps.build_app.conclusion == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: zed-gnat-${{ matrix.target }}
+          # Only the toolchain-injected .app (zipped). We deliberately do not
+          # ship the upstream DMG -- it is built before toolchain injection, so
+          # it would be a plain Zed without GNAT.
+          path: zed-fork/zed/target/${{ matrix.target }}/release/bundle/osx/*.tar.gz
+          if-no-files-found: error
+          retention-days: 14

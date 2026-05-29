@@ -1,0 +1,14 @@
+[
+  {
+    "label": "Debug Ada main (CodeLLDB)",
+    "adapter": "CodeLLDB",
+    "program": "$ZED_WORKTREE_ROOT/main",
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "request": "launch",
+    "build": {
+      "label": "Ada: build",
+      "command": "zed-gnat-build"
+    },
+    "tags": ["ada-main"]
+  }
+]

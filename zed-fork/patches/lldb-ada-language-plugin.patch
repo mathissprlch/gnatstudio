@@ -1,0 +1,317 @@
+# AdaLanguage plugin + Ada String data formatters.
+#
+# A dedicated lldb_private::Language plugin for Ada (DW_LANG_Ada83/95/2005/2012)
+# with two hardcoded summaries that render GNAT strings as quoted text:
+#   * unconstrained String -- the fat-pointer record {P_ARRAY, P_BOUNDS},
+#     reading the LB0..UB0 byte range;
+#   * constrained String -- a fixed-length array of Character stored inline.
+# Both restrict to single-byte character elements so non-character arrays fall
+# through to default rendering. Auto-registers via the PLUGIN cmake keyword +
+# LLDB_PLUGIN_DEFINE. With TypeSystemAda reporting eLanguageTypeAda* natively,
+# these summaries are consulted through the normal Ada formatter path.
+diff --git a/lldb/source/Plugins/Language/Ada/AdaLanguage.cpp b/lldb/source/Plugins/Language/Ada/AdaLanguage.cpp
+new file mode 100644
+index 000000000..fe0323bf0
+--- /dev/null
++++ b/lldb/source/Plugins/Language/Ada/AdaLanguage.cpp
+@@ -0,0 +1,219 @@
++//===-- AdaLanguage.cpp ---------------------------------------------------===//
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++
++#include "AdaLanguage.h"
++#include "lldb/Core/Address.h"
++#include "lldb/Core/PluginManager.h"
++#include "lldb/Core/ValueObject.h"
++#include "lldb/DataFormatters/StringPrinter.h"
++#include "lldb/DataFormatters/TypeSummary.h"
++#include "lldb/Symbol/CompilerType.h"
++#include "lldb/Target/Process.h"
++#include "lldb/Target/Target.h"
++#include "lldb/Utility/DataBufferHeap.h"
++#include "lldb/Utility/DataExtractor.h"
++#include "lldb/Utility/Status.h"
++#include "lldb/Utility/Stream.h"
++#include "llvm/ADT/StringRef.h"
++#include "llvm/Support/Threading.h"
++
++using namespace lldb;
++using namespace lldb_private;
++using namespace lldb_private::formatters;
++
++LLDB_PLUGIN_DEFINE(AdaLanguage)
++
++void AdaLanguage::Initialize() {
++  PluginManager::RegisterPlugin(GetPluginNameStatic(), "Ada Language",
++                                CreateInstance);
++}
++
++void AdaLanguage::Terminate() { PluginManager::UnregisterPlugin(CreateInstance); }
++
++Language *AdaLanguage::CreateInstance(lldb::LanguageType language) {
++  switch (language) {
++  case eLanguageTypeAda83:
++  case eLanguageTypeAda95:
++  case eLanguageTypeAda2005:
++  case eLanguageTypeAda2012:
++    return new AdaLanguage();
++  default:
++    return nullptr;
++  }
++}
++
++bool AdaLanguage::IsSourceFile(llvm::StringRef file_path) const {
++  return file_path.ends_with(".adb") || file_path.ends_with(".ads");
++}
++
++namespace {
++
++// GNAT represents an unconstrained array (e.g. String) as a "fat pointer"
++// record carrying two members: P_ARRAY (a pointer to the element data) and
++// P_BOUNDS (a pointer to a {LB0, UB0} bounds record). Match that shape,
++// restricted to single-byte character elements so non-character unconstrained
++// arrays fall through to the default (struct) rendering unchanged.
++bool IsAdaStringFatPointer(ValueObject &valobj) {
++  ValueObjectSP array_sp = valobj.GetChildMemberWithName("P_ARRAY");
++  ValueObjectSP bounds_sp = valobj.GetChildMemberWithName("P_BOUNDS");
++  if (!array_sp || !bounds_sp)
++    return false;
++  CompilerType element;
++  if (!array_sp->GetCompilerType().GetPointeeType().IsArrayType(&element))
++    return false;
++  return element.IsCharType();
++}
++
++bool AdaStringSummaryProvider(ValueObject &valobj, Stream &stream,
++                             const TypeSummaryOptions &options) {
++  ValueObjectSP array_sp = valobj.GetChildMemberWithName("P_ARRAY");
++  ValueObjectSP bounds_sp = valobj.GetChildMemberWithName("P_BOUNDS");
++  if (!array_sp || !bounds_sp)
++    return false;
++
++  addr_t data_addr = array_sp->GetValueAsUnsigned(LLDB_INVALID_ADDRESS);
++  if (data_addr == 0 || data_addr == LLDB_INVALID_ADDRESS)
++    return false;
++
++  Status error;
++  ValueObjectSP bounds = bounds_sp->Dereference(error);
++  if (!bounds || error.Fail())
++    return false;
++  ValueObjectSP lb_sp = bounds->GetChildMemberWithName("LB0");
++  ValueObjectSP ub_sp = bounds->GetChildMemberWithName("UB0");
++  if (!lb_sp || !ub_sp)
++    return false;
++
++  // Ada arrays use a language-defined lower bound; length is UB - LB + 1.
++  int64_t lb = lb_sp->GetValueAsSigned(1);
++  int64_t ub = ub_sp->GetValueAsSigned(0);
++  if (ub < lb) {
++    stream.PutCString("\"\"");
++    return true;
++  }
++  uint64_t length = static_cast<uint64_t>(ub - lb + 1);
++
++  TargetSP target_sp = valobj.GetTargetSP();
++  ProcessSP process_sp = valobj.GetProcessSP();
++  if (!target_sp || !process_sp)
++    return false;
++
++  // An Ada String is a fixed-length, non-NUL-terminated buffer, so read the
++  // exact bytes and render them via the buffer path (the ASCII *string* path
++  // assumes C-string semantics and would drop the last character).
++  bool uncapped =
++      options.GetCapping() == TypeSummaryCapping::eTypeSummaryUncapped;
++  uint64_t max_size = target_sp->GetMaximumSizeOfStringSummary();
++  bool truncated = false;
++  if (!uncapped && length > max_size) {
++    length = max_size;
++    truncated = true;
++  }
++
++  WritableDataBufferSP buffer_sp(new DataBufferHeap(length, 0));
++  Status read_error;
++  process_sp->ReadMemory(data_addr, buffer_sp->GetBytes(), length, read_error);
++  if (read_error.Fail())
++    return false;
++
++  StringPrinter::ReadBufferAndDumpToStreamOptions sopts(valobj);
++  sopts.SetData(DataExtractor(buffer_sp,
++                              target_sp->GetArchitecture().GetByteOrder(),
++                              target_sp->GetArchitecture().GetAddressByteSize()));
++  sopts.SetStream(&stream);
++  sopts.SetQuote('"');
++  sopts.SetSourceSize(static_cast<uint32_t>(length));
++  sopts.SetBinaryZeroIsTerminator(false);
++  sopts.SetIsTruncated(truncated);
++  return StringPrinter::ReadBufferAndDumpToStream<
++      StringPrinter::StringElementType::ASCII>(sopts);
++}
++
++// A constrained Ada String is a fixed-length array of Character stored inline
++// (no fat pointer), e.g. `Name : String := "Ada"`. Match an array of
++// single-byte character elements so it renders as a quoted string; arrays of
++// any other element type fall through to the default element-by-element
++// rendering unchanged.
++bool IsAdaCharArray(ValueObject &valobj) {
++  CompilerType element;
++  return valobj.GetCompilerType().IsArrayType(&element) && element.IsCharType();
++}
++
++bool AdaCharArraySummaryProvider(ValueObject &valobj, Stream &stream,
++                                 const TypeSummaryOptions &options) {
++  if (!IsAdaCharArray(valobj))
++    return false;
++
++  DataExtractor data;
++  Status error;
++  valobj.GetData(data, error);
++  if (error.Fail())
++    return false;
++
++  uint64_t length = data.GetByteSize();
++  TargetSP target_sp = valobj.GetTargetSP();
++  if (!target_sp)
++    return false;
++
++  bool uncapped =
++      options.GetCapping() == TypeSummaryCapping::eTypeSummaryUncapped;
++  bool truncated = false;
++  uint64_t max_size = target_sp->GetMaximumSizeOfStringSummary();
++  if (!uncapped && length > max_size) {
++    length = max_size;
++    truncated = true;
++  }
++
++  StringPrinter::ReadBufferAndDumpToStreamOptions sopts(valobj);
++  sopts.SetData(DataExtractor(data, 0, length));
++  sopts.SetStream(&stream);
++  sopts.SetQuote('"');
++  sopts.SetSourceSize(static_cast<uint32_t>(length));
++  sopts.SetBinaryZeroIsTerminator(false);
++  sopts.SetIsTruncated(truncated);
++  return StringPrinter::ReadBufferAndDumpToStream<
++      StringPrinter::StringElementType::ASCII>(sopts);
++}
++
++} // namespace
++
++HardcodedFormatters::HardcodedSummaryFinder
++AdaLanguage::GetHardcodedSummaries() {
++  static llvm::once_flag g_initialize;
++  static HardcodedFormatters::HardcodedSummaryFinder g_formatters;
++
++  llvm::call_once(g_initialize, []() -> void {
++    g_formatters.push_back(
++        [](ValueObject &valobj, lldb::DynamicValueType,
++           FormatManager &) -> TypeSummaryImpl::SharedPointer {
++          static CXXFunctionSummaryFormat::SharedPointer formatter_sp(
++              new CXXFunctionSummaryFormat(
++                  TypeSummaryImpl::Flags().SetCascades(true).SetDontShowChildren(
++                      true),
++                  AdaStringSummaryProvider, "Ada string summary provider"));
++          if (IsAdaStringFatPointer(valobj))
++            return formatter_sp;
++          return nullptr;
++        });
++    g_formatters.push_back(
++        [](ValueObject &valobj, lldb::DynamicValueType,
++           FormatManager &) -> TypeSummaryImpl::SharedPointer {
++          static CXXFunctionSummaryFormat::SharedPointer formatter_sp(
++              new CXXFunctionSummaryFormat(
++                  TypeSummaryImpl::Flags().SetCascades(true).SetDontShowChildren(
++                      true),
++                  AdaCharArraySummaryProvider,
++                  "Ada character array summary provider"));
++          if (IsAdaCharArray(valobj))
++            return formatter_sp;
++          return nullptr;
++        });
++  });
++
++  return g_formatters;
++}
+diff --git a/lldb/source/Plugins/Language/Ada/AdaLanguage.h b/lldb/source/Plugins/Language/Ada/AdaLanguage.h
+new file mode 100644
+index 000000000..7fdbdf855
+--- /dev/null
++++ b/lldb/source/Plugins/Language/Ada/AdaLanguage.h
+@@ -0,0 +1,47 @@
++//===-- AdaLanguage.h -----------------------------------------------------===//
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++
++#ifndef LLDB_SOURCE_PLUGINS_LANGUAGE_ADA_ADALANGUAGE_H
++#define LLDB_SOURCE_PLUGINS_LANGUAGE_ADA_ADALANGUAGE_H
++
++#include "lldb/Target/Language.h"
++#include "lldb/lldb-private.h"
++
++namespace lldb_private {
++
++class AdaLanguage : public Language {
++public:
++  AdaLanguage() = default;
++  ~AdaLanguage() override = default;
++
++  lldb::LanguageType GetLanguageType() const override {
++    return lldb::eLanguageTypeAda95;
++  }
++
++  llvm::StringRef GetUserEntryPointName() const override { return "main"; }
++
++  bool IsSourceFile(llvm::StringRef file_path) const override;
++
++  HardcodedFormatters::HardcodedSummaryFinder GetHardcodedSummaries() override;
++
++  // Static Functions
++  static void Initialize();
++
++  static void Terminate();
++
++  static lldb_private::Language *CreateInstance(lldb::LanguageType language);
++
++  static llvm::StringRef GetPluginNameStatic() { return "ada"; }
++
++  // PluginInterface protocol
++  llvm::StringRef GetPluginName() override { return GetPluginNameStatic(); }
++};
++
++} // namespace lldb_private
++
++#endif // LLDB_SOURCE_PLUGINS_LANGUAGE_ADA_ADALANGUAGE_H
+diff --git a/lldb/source/Plugins/Language/Ada/CMakeLists.txt b/lldb/source/Plugins/Language/Ada/CMakeLists.txt
+new file mode 100644
+index 000000000..5c1c33ca3
+--- /dev/null
++++ b/lldb/source/Plugins/Language/Ada/CMakeLists.txt
+@@ -0,0 +1,13 @@
++add_lldb_library(lldbPluginAdaLanguage PLUGIN
++  AdaLanguage.cpp
++
++  LINK_LIBS
++    lldbCore
++    lldbDataFormatters
++    lldbSymbol
++    lldbTarget
++    lldbUtility
++
++  LINK_COMPONENTS
++    Support
++)
+diff --git a/lldb/source/Plugins/Language/CMakeLists.txt b/lldb/source/Plugins/Language/CMakeLists.txt
+index 786907456..e51cb2999 100644
+--- a/lldb/source/Plugins/Language/CMakeLists.txt
++++ b/lldb/source/Plugins/Language/CMakeLists.txt
+@@ -1,3 +1,4 @@
++add_subdirectory(Ada)
+ add_subdirectory(ClangCommon)
+ add_subdirectory(CPlusPlus)
+ add_subdirectory(ObjC)

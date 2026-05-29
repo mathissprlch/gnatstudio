@@ -1,0 +1,13 @@
+# Staged GNAT toolchain (output of provision-toolchain.sh).
+build/
+
+# Cargo / Rust artifacts inside the subtree and elsewhere.
+zed/target/
+target/
+**/*.rs.bk
+
+# Python venvs from local rflx tests.
+.venv/
+
+# macOS noise.
+.DS_Store
