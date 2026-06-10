@@ -1,0 +1,19 @@
+name = "gnatstudio"
+description = "GNAT Studio IDE"
+version = "0.0.0"
+licenses = "GPL-3.0-or-later"
+authors = ["AdaCore"]
+
+[[depends-on]]
+gtkada = "*"
+xmlada = "*"
+gnatcoll = "*"
+gnatcoll_projects = "*"
+gnatcoll_iconv = "*"
+libadalang = "*"
+libadalang_tools = "*"
+ada_language_server = "*"
+gnatcoll_sqlite = "*"
+gnatcoll_xref = "*"
+vss_text = "*"
+vss_extra = "*"

@@ -659,9 +659,11 @@ package body DAP.Clients.Breakpoint_Managers is
 
       for Data of Self.Holder.Get_Breakpoints (Indexes => Indexes) loop
          Sb.line   := Integer (GPS.Editors.Get_Line (Get_Location (Data)));
-         Sb.column :=
-           (Is_Set => True,
-            Value  => Integer (GPS.Editors.Get_Column (Get_Location (Data))));
+         --  PATCH (lldb-dap): omit the column. lldb matches breakpoints by
+         --  exact column; the editor column 1 misses the Ada statement, so
+         --  lldb-dap leaves it "verified:false" and the program runs past
+         --  it. Line-only lets lldb-dap bind it. (gdb's DAP is tolerant.)
+         Sb.column := (Is_Set => False);
          Sb.condition    := Data.Condition;
          Sb.hitCondition := Get_Ignore (Data);
 

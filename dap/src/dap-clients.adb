@@ -1389,23 +1389,19 @@ package body DAP.Clients is
 
    procedure On_Initialized (Self : in out DAP_Client)
    is
-      use GNATCOLL.Projects;
    begin
       Self.Breakpoints.Initialize;
 
-      --  No project has been set for this debugger: this means that the
-      --  debugger was launched through GNAT Studio's --debug option, directly
-      --  on an executable.
-      --  In that case, we send the 'launch' DAP request to the DAP server,
-      --  stopping at the beginning of the main, in order to retrieve the
-      --  executables's sources via the 'loadedSources' DAP request to
-      --  create a temporary project with the response.
-      if Self.Project = GNATCOLL.Projects.No_Project then
-         Self.Launch_Executable
-           (Executable        => Self.Get_Executable,
-            Executable_Args   => Self.Get_Executable_Args,
-            Stop_At_Beginning => True);
-      end if;
+      --  PATCH (macOS / lldb-dap): send the 'launch' DAP request on
+      --  initialize in ALL cases, not only the no-project (--debug) case.
+      --  Upstream only launched when no project was set; with a project
+      --  loaded the program was never told to start (lldb-dap then sits idle
+      --  after 'initialize'), so interactive project debugging never ran.
+      --  Stop at the beginning; the user continues to their breakpoints.
+      Self.Launch_Executable
+        (Executable        => Self.Get_Executable,
+         Executable_Args   => Self.Get_Executable_Args,
+         Stop_At_Beginning => True);
    end On_Initialized;
 
    --------------------

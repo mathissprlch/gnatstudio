@@ -102,3 +102,7 @@ testsuite/bin/test_trie
 testsuite/internal
 testsuite/share/
 testsuite/out
+
+# Alire-generated build artifacts (from `alr build` / build-macos.sh)
+/alire/
+/config/
